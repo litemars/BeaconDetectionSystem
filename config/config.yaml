@@ -1,0 +1,177 @@
+# eBPF Beaconing Detection System Configuration
+# Copy this file to config.yaml and adjust for your environment
+
+# =============================================================================
+# DATA PLANE CONFIGURATION
+# =============================================================================
+data_plane:
+  # Network interface to monitor (required)
+  interface: "eth0"
+  
+  # Interval in seconds between telemetry exports to control plane
+  # Lower values = more real-time but higher overhead
+  # Recommended: 30-120 seconds for production
+  export_interval: 60
+  
+  # Control plane connection settings
+  control_plane_host: "127.0.0.1"
+  control_plane_port: 9090
+  
+  # Connection timeout for control plane communication (seconds)
+  connection_timeout: 10
+  
+  # Maximum number of connection records to buffer before export
+  # Higher values use more memory but handle burst traffic better
+  max_buffer_size: 100000
+  
+  # eBPF ring buffer size in pages (1 page = 4KB typically)
+  # Increase if you see dropped events in high-traffic environments
+  ring_buffer_pages: 64
+  
+  # Protocols to track
+  track_tcp: true
+  track_udp: true
+
+# =============================================================================
+# CONTROL PLANE CONFIGURATION  
+# =============================================================================
+control_plane:
+  # Listen address for receiving telemetry
+  # Use 0.0.0.0 to accept from any interface, 127.0.0.1 for local only
+  listen_address: "0.0.0.0"
+  listen_port: 9090
+  
+  # Maximum number of data plane connections
+  max_connections: 10
+  
+  # Data retention period in seconds (how long to keep connection data)
+  # Longer periods enable detection of slower beacons but use more memory
+  data_retention: 7200  # 2 hours
+  
+  # Cleanup interval for expired data (seconds)
+  cleanup_interval: 300  # 5 minutes
+
+# =============================================================================
+# BEACON DETECTION CONFIGURATION
+# =============================================================================
+detection:
+  # Minimum number of connection events required before analysis
+  # Too low = false positives, too high = miss short beacon sessions
+  min_connections: 10
+  
+  # Analysis time window in seconds
+  # Connection pairs are analyzed over this sliding window
+  time_window: 3600  # 1 hour
+  
+  # Coefficient of Variation (CV) threshold
+  # CV = std_dev / mean of intervals
+  # Lower values = more regular intervals (beacon-like)
+  # Typical beacons: CV < 0.1
+  # Normal traffic: CV > 0.3
+  cv_threshold: 0.15
+  
+  # FFT periodicity score threshold (0.0 to 1.0)
+  # Higher values indicate stronger periodic patterns
+  # Typical beacons: > 0.7
+  periodicity_threshold: 0.7
+  
+  # Maximum allowed jitter in seconds
+  # Jitter = max deviation from median interval
+  # Lower jitter = more beacon-like
+  jitter_threshold: 5.0
+  
+  # Minimum beacon interval to detect (seconds)
+  # Intervals shorter than this are ignored (likely not beacons)
+  min_beacon_interval: 10
+  
+  # Maximum beacon interval to detect (seconds)
+  # Intervals longer than this are ignored
+  max_beacon_interval: 3600
+  
+  # Scoring weights for combined detection
+  # Sum should equal 1.0
+  cv_weight: 0.4
+  periodicity_weight: 0.4
+  jitter_weight: 0.2
+  
+  # Final score threshold for alert (0.0 to 1.0)
+  alert_threshold: 0.7
+  
+  # Cooldown period between alerts for same connection pair (seconds)
+  alert_cooldown: 300
+
+# =============================================================================
+# ALERTING CONFIGURATION
+# =============================================================================
+alerting:
+  # Enable/disable different alert channels
+  enabled: true
+  
+  # Syslog alerting
+  syslog:
+    enabled: false
+    facility: "local0"
+    level: "warning"
+  
+  # File-based alerting
+  file:
+    enabled: true
+    path: "/var/log/beacon-detect/alerts.json"
+    # Rotate when file exceeds this size (MB)
+    max_size_mb: 100
+    # Number of backup files to keep
+    backup_count: 5
+  
+  # Webhook alerting (for SIEM integration, Slack, etc.)
+  webhook:
+    enabled: false
+    url: "https://your-siem.example.com/api/alerts"
+    headers:
+      Authorization: "Bearer your-token-here"
+      Content-Type: "application/json"
+    timeout: 10
+    retries: 3
+
+# =============================================================================
+# LOGGING CONFIGURATION
+# =============================================================================
+logging:
+  # Log level: DEBUG, INFO, WARNING, ERROR, CRITICAL
+  level: "INFO"
+  
+  # Log format: json or text
+  format: "json"
+  
+  # Log file path (use null for stdout only)
+  file: "/var/log/beacon-detect/beacon-detect.log"
+  
+  # Maximum log file size in MB before rotation
+  max_size_mb: 50
+  
+  # Number of backup log files to keep
+  backup_count: 5
+
+# =============================================================================
+# WHITELIST CONFIGURATION
+# =============================================================================
+whitelist:
+  # IP addresses to exclude from analysis
+  # Use for known legitimate periodic services (NTP, health checks, etc.)
+  source_ips: []
+    # - "10.0.0.1"
+    # - "192.168.1.1"
+  
+  destination_ips: []
+    # - "8.8.8.8"  # Google DNS
+    # - "1.1.1.1"  # Cloudflare DNS
+  
+  # Destination ports to exclude
+  ports: []
+    # - 53   # DNS
+    # - 123  # NTP
+    # - 443  # HTTPS (optional, may want to monitor this)
+  
+  # Specific source:destination pairs to exclude
+  # Format: "src_ip:dst_ip:dst_port"
+  pairs: []
+    # - "10.0.0.5:192.168.1.1:80"

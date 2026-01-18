@@ -1,0 +1,89 @@
+# Logging Configuration for eBPF Beaconing Detection System
+# This file defines detailed logging behavior
+
+version: 1
+disable_existing_loggers: false
+
+formatters:
+  standard:
+    format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    datefmt: "%Y-%m-%d %H:%M:%S"
+  
+  json:
+    class: pythonjsonlogger.jsonlogger.JsonFormatter
+    format: "%(asctime)s %(name)s %(levelname)s %(message)s %(pathname)s %(lineno)d"
+
+  detailed:
+    format: "%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s"
+    datefmt: "%Y-%m-%d %H:%M:%S"
+
+handlers:
+  console:
+    class: logging.StreamHandler
+    level: INFO
+    formatter: standard
+    stream: ext://sys.stdout
+
+  file:
+    class: logging.handlers.RotatingFileHandler
+    level: DEBUG
+    formatter: json
+    filename: /var/log/beacon-detect/beacon-detect.log
+    maxBytes: 52428800  # 50MB
+    backupCount: 5
+    encoding: utf-8
+
+  error_file:
+    class: logging.handlers.RotatingFileHandler
+    level: ERROR
+    formatter: detailed
+    filename: /var/log/beacon-detect/errors.log
+    maxBytes: 10485760  # 10MB
+    backupCount: 3
+    encoding: utf-8
+
+  alert_file:
+    class: logging.handlers.RotatingFileHandler
+    level: WARNING
+    formatter: json
+    filename: /var/log/beacon-detect/alerts.json
+    maxBytes: 104857600  # 100MB
+    backupCount: 5
+    encoding: utf-8
+
+  syslog:
+    class: logging.handlers.SysLogHandler
+    level: WARNING
+    facility: local0
+    address: /dev/log
+    formatter: standard
+
+loggers:
+  beacon_detect:
+    level: DEBUG
+    handlers: [console, file, error_file]
+    propagate: false
+
+  beacon_detect.data_plane:
+    level: INFO
+    handlers: [console, file]
+    propagate: false
+
+  beacon_detect.control_plane:
+    level: INFO
+    handlers: [console, file]
+    propagate: false
+
+  beacon_detect.detector:
+    level: INFO
+    handlers: [console, file]
+    propagate: false
+
+  beacon_detect.alerter:
+    level: WARNING
+    handlers: [console, alert_file, syslog]
+    propagate: false
+
+root:
+  level: INFO
+  handlers: [console]
