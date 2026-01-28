@@ -12,9 +12,14 @@ import pytest
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from control_plane.detector import (BeaconConfidence, BeaconDetector,
-                                    DetectionResult, DetectorConfig,
-                                    IntervalStats, PeriodicityResult)
+from control_plane.detector import (
+    BeaconConfidence,
+    BeaconDetector,
+    DetectionResult,
+    DetectorConfig,
+    IntervalStats,
+    PeriodicityResult,
+)
 from control_plane.storage import ConnectionPair
 
 

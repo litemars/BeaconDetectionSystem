@@ -9,12 +9,14 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from control_plane.alerter import Alert, AlertManager, AlertSeverity
-from control_plane.analyzer import (AnalysisRun, AnalyzerConfig,
-                                    ConnectionAnalyzer)
-from control_plane.detector import (BeaconConfidence, BeaconDetector,
-                                    DetectionResult, DetectorConfig)
-from control_plane.storage import (ConnectionPair, ConnectionRecord,
-                                   ConnectionStorage)
+from control_plane.analyzer import AnalysisRun, AnalyzerConfig, ConnectionAnalyzer
+from control_plane.detector import (
+    BeaconConfidence,
+    BeaconDetector,
+    DetectionResult,
+    DetectorConfig,
+)
+from control_plane.storage import ConnectionPair, ConnectionRecord, ConnectionStorage
 
 
 class TestConnectionStorage:

@@ -28,8 +28,12 @@ except ImportError:
     sys.exit(1)
 
 from .exporter import ExporterConfig, SyncTelemetryExporter
-from .telemetry import (ConnectionEvent, ConnectionEventCType, DataPlaneStats,
-                        TelemetryBuffer)
+from .telemetry import (
+    ConnectionEvent,
+    ConnectionEventCType,
+    DataPlaneStats,
+    TelemetryBuffer,
+)
 
 # Configure logging
 logging.basicConfig(
