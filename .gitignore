@@ -1,6 +1,37 @@
+# Virtual environments
 venv
+vevn
+env
+ENV
+.venv
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+
+
+# Testing
 pytest.ini
 .pytest*
-tests/__pycache__
-data_plane/__pycache__
-control_plane/__pycache__
+.coverage
+.coverage.*
+htmlcov/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Environment
+.env
+.env.local
+*.log
+
+# OS
+.DS_Store
