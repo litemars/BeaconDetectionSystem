@@ -90,6 +90,19 @@ class Alert:
     def to_json(self):
         return json.dumps(self.to_dict(), indent=2)
 
+    @classmethod
+    def from_dict(cls, data):
+        return cls(
+            alert_id=data["alert_id"],
+            title=data["title"],
+            description=data["description"],
+            severity=AlertSeverity(data["severity"]),
+            source=data["source"],
+            details=data.get("details", {}),
+            timestamp=data.get("timestamp", ""),
+            tags=data.get("tags", []),
+        )
+
     def to_syslog_message(self):
         return (
             f"[{self.severity.value.upper()}] {self.title} | "
@@ -293,9 +306,10 @@ class WebhookHandler:
 
 class AlertManager:
 
-    def __init__(self, config=None):
+    def __init__(self, config=None, persistence=None):
 
         self.config = config or AlertingConfig()
+        self._persistence = persistence
 
         # Initialize handlers
         self._syslog = SyslogHandler(self.config)
@@ -406,6 +420,13 @@ class AlertManager:
         if len(self._recent_alerts) > self._max_recent_alerts:
             self._recent_alerts = self._recent_alerts[-self._max_recent_alerts :]
 
+        # Persist to database
+        if self._persistence:
+            try:
+                self._persistence.save_alert(alert.to_dict())
+            except Exception as e:
+                logger.error(f"Failed to persist alert: {e}")
+
     def send_alert(self, alert: Alert):
 
         if not self.config.enabled:
@@ -455,6 +476,28 @@ class AlertManager:
             alerts = [a for a in alerts if a.severity == severity]
 
         return [a.to_dict() for a in reversed(alerts)]
+
+    def load_historical_alerts(self):
+        """Load alerts from persistence on startup."""
+        if not self._persistence:
+            return
+
+        try:
+            alert_dicts = self._persistence.load_alerts(limit=self._max_recent_alerts)
+            for alert_dict in reversed(alert_dicts):
+                try:
+                    alert = Alert.from_dict(alert_dict)
+                    self._recent_alerts.append(alert)
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to restore alert {alert_dict.get('alert_id')}: {e}"
+                    )
+
+            logger.info(
+                f"Loaded {len(self._recent_alerts)} historical alerts from database"
+            )
+        except Exception as e:
+            logger.error(f"Failed to load historical alerts: {e}")
 
     @property
     def statistics(self):

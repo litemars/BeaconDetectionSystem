@@ -152,6 +152,14 @@ logging:
   backup_count: 5
 
 # =============================================================================
+# PERSISTENCE CONFIGURATION
+# =============================================================================
+persistence:
+  # SQLite database path for persisting alerts and beacons
+  # Set to null to disable persistence (in-memory only)
+  db_path: "./beacon_detect.db"
+
+# =============================================================================
 # WHITELIST CONFIGURATION
 # =============================================================================
 whitelist:
