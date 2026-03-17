@@ -46,6 +46,19 @@ class IntervalStats:
             "jitter": float(round(self.jitter, 3)),
         }
 
+    @classmethod
+    def from_dict(cls, data):
+        return cls(
+            count=data["count"],
+            mean=data["mean"],
+            std_dev=data["std_dev"],
+            cv=data["cv"],
+            median=data["median"],
+            min_interval=data["min_interval"],
+            max_interval=data["max_interval"],
+            jitter=data["jitter"],
+        )
+
 
 @dataclass
 class PeriodicityResult:
@@ -67,6 +80,15 @@ class PeriodicityResult:
                 for f, m in self.frequency_peaks
             ],
         }
+
+    @classmethod
+    def from_dict(cls, data):
+        return cls(
+            is_periodic=data["is_periodic"],
+            dominant_period=data["dominant_period"] or 0.0,
+            periodicity_score=data["periodicity_score"],
+            frequency_peaks=[(f, m) for f, m in data["frequency_peaks"]],
+        )
 
 
 @dataclass
@@ -124,6 +146,29 @@ class DetectionResult:
             "last_seen": str(self.last_seen),
             "analysis_time": str(self.analysis_time),
         }
+
+    @classmethod
+    def from_dict(cls, data):
+        return cls(
+            pair_key=data["pair_key"],
+            src_ip=data["src_ip"],
+            dst_ip=data["dst_ip"],
+            dst_port=data["dst_port"],
+            protocol=data["protocol"],
+            cv_score=data["cv_score"],
+            periodicity_score=data["periodicity_score"],
+            jitter_score=data["jitter_score"],
+            combined_score=data["combined_score"],
+            is_beacon=data["is_beacon"],
+            confidence=BeaconConfidence(data["confidence"]),
+            interval_stats=IntervalStats.from_dict(data["interval_stats"]),
+            periodicity_result=PeriodicityResult.from_dict(data["periodicity_result"]),
+            connection_count=data["connection_count"],
+            duration_seconds=data["duration_seconds"],
+            first_seen=data["first_seen"],
+            last_seen=data["last_seen"],
+            analysis_time=data.get("analysis_time", ""),
+        )
 
 
 @dataclass

@@ -15,6 +15,7 @@ from aiohttp import web
 from .alerter import AlertingConfig, AlertManager, AlertSeverity
 from .analyzer import AnalyzerConfig, ConnectionAnalyzer
 from .detector import BeaconDetector, DetectorConfig
+from .persistence import PersistenceConfig, SQLiteStore
 from .storage import ConnectionStorage
 
 # Configure logging
@@ -41,6 +42,7 @@ class ControlPlaneServer:
         # Initialize components
         self._init_storage(config)
         self._init_detector(config)
+        self._init_persistence(config)
         self._init_alerter(config)
         self._init_analyzer(config)
 
@@ -101,6 +103,14 @@ class ControlPlaneServer:
             cleanup_interval=cp_config.get("cleanup_interval", 300),
         )
 
+    def _init_persistence(self, config):
+
+        persistence_config = config.get("persistence", {})
+        db_path = persistence_config.get("db_path", "./beacon_detect.db")
+
+        self.persistence = SQLiteStore(PersistenceConfig(db_path=db_path))
+        self.persistence.open()
+
     def _init_detector(self, config):
 
         det_config = config.get("detection", {})
@@ -140,11 +150,12 @@ class ControlPlaneServer:
             webhook_timeout=alert_config.get("webhook", {}).get("timeout", 10),
             webhook_retries=alert_config.get("webhook", {}).get("retries", 3),
         )
-        self.alert_manager = AlertManager(alerting_config)
+        self.alert_manager = AlertManager(alerting_config, persistence=self.persistence)
 
     def _init_analyzer(self, config):
 
         det_config = config.get("detection", {})
+        whitelist = config.get("whitelist", {})
         analyzer_config = AnalyzerConfig(
             analysis_interval=60,  # Run every minute
             min_connections=det_config.get("min_connections", 10),
@@ -156,6 +167,8 @@ class ControlPlaneServer:
             detector=self.detector,
             alert_manager=self.alert_manager,
             config=analyzer_config,
+            whitelist=whitelist,
+            persistence=self.persistence,
         )
 
     def _setup_routes(self, app: web.Application):
@@ -450,6 +463,9 @@ class ControlPlaneServer:
                         "whitelist"
                     ]["destination_ports"]
 
+                # Propagate whitelist to analyzer
+                self.analyzer.update_whitelist(self.config.get("whitelist", {}))
+
             logger.info("Configuration updated via API")
             return web.json_response(
                 {"status": "updated", "config": self._runtime_config}
@@ -484,6 +500,11 @@ class ControlPlaneServer:
         # Start components
         self.storage.start_cleanup()
         self.alert_manager.start()
+
+        # Load historical data from database
+        self.alert_manager.load_historical_alerts()
+        self.analyzer.load_historical_beacons()
+
         self.analyzer.start()
 
         # Create and configure app with CORS support
@@ -567,6 +588,12 @@ class ControlPlaneServer:
             except Exception as e:
                 logger.warning(f"Error cleaning up runner: {e}")
 
+        # Close persistence
+        try:
+            self.persistence.close()
+        except Exception as e:
+            logger.warning(f"Error closing persistence: {e}")
+
         logger.info("Control plane server stopped")
 
     def request_shutdown(self):
@@ -613,11 +640,20 @@ def setup_logging(config):
                 maxBytes=log_config.get("max_size_mb", 50) * 1024 * 1024,
                 backupCount=log_config.get("backup_count", 5),
             )
-            handler.setFormatter(
-                logging.Formatter(
+
+            log_format = log_config.get("format", "text")
+            if log_format == "json":
+                from pythonjsonlogger import jsonlogger
+
+                formatter = jsonlogger.JsonFormatter(
+                    "%(asctime)s %(name)s %(levelname)s %(message)s %(pathname)s %(lineno)d"
+                )
+            else:
+                formatter = logging.Formatter(
                     "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
                 )
-            )
+
+            handler.setFormatter(formatter)
             logging.getLogger().addHandler(handler)
         except Exception as e:
             logger.warning(f"Could not set up file logging: {e}")
