@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 import argparse
 import asyncio
+import gzip
+import hmac
 import json
 import logging
 import logging.handlers
@@ -9,11 +11,18 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+try:
+    import psutil
+
+    _PSUTIL_AVAILABLE = True
+except ImportError:
+    _PSUTIL_AVAILABLE = False
+
 import yaml
 from aiohttp import web
 
 from .alerter import AlertingConfig, AlertManager, AlertSeverity
-from .analyzer import AnalyzerConfig, ConnectionAnalyzer
+from .analyzer import AnalyzerConfig, BenignPattern, ConnectionAnalyzer
 from .detector import BeaconDetector, DetectorConfig
 from .storage import ConnectionStorage
 
@@ -66,6 +75,8 @@ class ControlPlaneServer:
         return {
             "detection": {
                 "min_connections": det.get("min_connections", 10),
+                "min_duration": det.get("min_duration", 300.0),
+                "time_window": det.get("time_window", 3600),
                 "cv_threshold": det.get("cv_threshold", 0.15),
                 "alert_threshold": det.get("alert_threshold", 0.7),
                 "jitter_threshold": det.get("jitter_threshold", 5.0),
@@ -73,9 +84,10 @@ class ControlPlaneServer:
                 "alert_cooldown": det.get("alert_cooldown", 300),
             },
             "weights": {
-                "cv": det.get("cv_weight", 0.4),
-                "periodicity": det.get("periodicity_weight", 0.4),
-                "jitter": det.get("jitter_weight", 0.2),
+                "cv": det.get("cv_weight", 0.35),
+                "periodicity": det.get("periodicity_weight", 0.35),
+                "jitter": det.get("jitter_weight", 0.15),
+                "size": det.get("size_weight", 0.15),
             },
             "alerting": {
                 "syslog_enabled": alert.get("syslog", {}).get("enabled", True),
@@ -112,9 +124,10 @@ class ControlPlaneServer:
             jitter_threshold=det_config.get("jitter_threshold", 5.0),
             min_beacon_interval=det_config.get("min_beacon_interval", 10.0),
             max_beacon_interval=det_config.get("max_beacon_interval", 3600.0),
-            cv_weight=det_config.get("cv_weight", 0.4),
-            periodicity_weight=det_config.get("periodicity_weight", 0.4),
-            jitter_weight=det_config.get("jitter_weight", 0.2),
+            cv_weight=det_config.get("cv_weight", 0.35),
+            periodicity_weight=det_config.get("periodicity_weight", 0.35),
+            jitter_weight=det_config.get("jitter_weight", 0.15),
+            size_weight=det_config.get("size_weight", 0.15),
             alert_threshold=det_config.get("alert_threshold", 0.7),
         )
         self.detector = BeaconDetector(detector_config)
@@ -145,11 +158,26 @@ class ControlPlaneServer:
     def _init_analyzer(self, config):
 
         det_config = config.get("detection", {})
+        baseline_config = config.get("benign_baseline", {})
+
+        # Parse benign patterns from config
+        patterns = []
+        for p in baseline_config.get("patterns", []):
+            patterns.append(
+                BenignPattern(
+                    dst_port=int(p["dst_port"]),
+                    protocol=p.get("protocol"),
+                    label=p.get("label", "benign"),
+                )
+            )
+
         analyzer_config = AnalyzerConfig(
-            analysis_interval=60,  # Run every minute
+            analysis_interval=det_config.get("analysis_interval", 60),
             min_connections=det_config.get("min_connections", 10),
-            min_duration=30.0,
+            min_duration=float(det_config.get("min_duration", 300.0)),
             alert_cooldown=det_config.get("alert_cooldown", 300),
+            benign_baseline_enabled=baseline_config.get("enabled", True),
+            benign_patterns=patterns,
         )
         self.analyzer = ConnectionAnalyzer(
             storage=self.storage,
@@ -217,6 +245,20 @@ class ControlPlaneServer:
         if self._start_time:
             uptime = (datetime.now(timezone.utc) - self._start_time).total_seconds()
 
+        system_stats: dict = {"cpu_percent": None, "memory_mb": None, "open_fds": None}
+        if _PSUTIL_AVAILABLE:
+            try:
+                proc = psutil.Process()
+                system_stats["cpu_percent"] = psutil.cpu_percent(interval=None)
+                system_stats["memory_mb"] = round(
+                    proc.memory_info().rss / (1024 * 1024), 1
+                )
+                system_stats["open_fds"] = (
+                    proc.num_fds() if hasattr(proc, "num_fds") else None
+                )
+            except Exception:
+                pass
+
         return web.json_response(
             {
                 "status": "running",
@@ -230,6 +272,7 @@ class ControlPlaneServer:
                 "storage": self.storage.statistics,
                 "analyzer": self.analyzer.statistics,
                 "alerter": self.alert_manager.statistics,
+                "system": system_stats,
             }
         )
 
@@ -248,14 +291,29 @@ class ControlPlaneServer:
             }
         )
 
+    def _check_api_key(self, request: web.Request) -> bool:
+        """Return True if request carries a valid API key, or auth is disabled."""
+        required = self.config.get("control_plane", {}).get("api_key", "")
+        if not required:
+            return True
+        provided = (
+            request.headers.get("X-API-Key", "")
+            or request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+        )
+        return hmac.compare_digest(required, provided)
+
     async def _handle_telemetry(self, request: web.Request) -> web.Response:
 
         self._requests_received += 1
 
-        try:
-            # Get request body
-            body = await request.read()
+        if not self._check_api_key(request):
+            return web.json_response({"error": "Unauthorized"}, status=401)
 
+        try:
+            # aiohttp ≥3.9 automatically decompresses Content-Encoding: gzip
+            # request bodies before they reach the handler, so no manual
+            # decompression is needed here.
+            body = await request.read()
             data = json.loads(body.decode("utf-8"))
 
             # Validate batch structure
@@ -359,26 +417,14 @@ class ControlPlaneServer:
             }
         )
 
-    async def _handle_manual_analyze(self, request: web.Request) -> web.Response:
-
-        try:
-            run = self.analyzer.run_analysis()
-            return web.json_response(
-                {
-                    "status": "completed",
-                    "run": run.to_dict(),
-                    "beacons_found": [r.to_dict() for r in run.results if r.is_beacon],
-                }
-            )
-        except Exception as e:
-            logger.error(f"Manual analysis failed: {e}")
-            return web.json_response({"error": str(e)}, status=500)
-
     async def _handle_get_config(self, request: web.Request) -> web.Response:
 
         return web.json_response(self._runtime_config)
 
     async def _handle_set_config(self, request: web.Request) -> web.Response:
+
+        if not self._check_api_key(request):
+            return web.json_response({"error": "Unauthorized"}, status=401)
 
         try:
             data = await request.json()
@@ -410,7 +456,6 @@ class ControlPlaneServer:
 
             if "weights" in data:
                 self._runtime_config["weights"].update(data["weights"])
-                # Update detector weights
                 if hasattr(self.detector, "config"):
                     w = data["weights"]
                     if "cv" in w:
@@ -419,6 +464,8 @@ class ControlPlaneServer:
                         self.detector.config.periodicity_weight = w["periodicity"]
                     if "jitter" in w:
                         self.detector.config.jitter_weight = w["jitter"]
+                    if "size" in w:
+                        self.detector.config.size_weight = w["size"]
 
             if "alerting" in data:
                 self._runtime_config["alerting"].update(data["alerting"])
@@ -461,6 +508,9 @@ class ControlPlaneServer:
 
     async def _handle_clear_alerts(self, request: web.Request) -> web.Response:
 
+        if not self._check_api_key(request):
+            return web.json_response({"error": "Unauthorized"}, status=401)
+
         try:
             if hasattr(self.alert_manager, "_recent_alerts"):
                 self.alert_manager._recent_alerts = []
@@ -470,11 +520,32 @@ class ControlPlaneServer:
 
     async def _handle_clear_beacons(self, request: web.Request) -> web.Response:
 
+        if not self._check_api_key(request):
+            return web.json_response({"error": "Unauthorized"}, status=401)
+
         try:
             if hasattr(self.analyzer, "_known_beacons"):
                 self.analyzer._known_beacons = {}
             return web.json_response({"status": "cleared"})
         except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def _handle_manual_analyze(self, request: web.Request) -> web.Response:
+
+        if not self._check_api_key(request):
+            return web.json_response({"error": "Unauthorized"}, status=401)
+
+        try:
+            run = self.analyzer.run_analysis()
+            return web.json_response(
+                {
+                    "status": "completed",
+                    "run": run.to_dict(),
+                    "beacons_found": [r.to_dict() for r in run.results if r.is_beacon],
+                }
+            )
+        except Exception as e:
+            logger.error(f"Manual analysis failed: {e}")
             return web.json_response({"error": str(e)}, status=500)
 
     async def start(self):

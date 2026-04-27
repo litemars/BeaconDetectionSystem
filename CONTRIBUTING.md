@@ -7,8 +7,8 @@ Thank you for your interest in contributing! This document provides guidelines a
 1. **Fork the repository** on GitHub
 2. **Clone your fork** locally:
    ```bash
-   git clone https://github.com/yourusername/BeaconDetectionSystemGit.git
-   cd BeaconDetectionSystemGit
+   git clone https://github.com/litemars/BeaconDetectionSystem.git
+   cd BeaconDetectionSystem
    ```
 
 3. **Set up the development environment**:
@@ -34,7 +34,6 @@ Thank you for your interest in contributing! This document provides guidelines a
 3. **Run tests and linting**:
    ```bash
    pytest
-   pylint control_plane data_plane
    black --check control_plane data_plane
    ```
 
@@ -45,24 +44,3 @@ Thank you for your interest in contributing! This document provides guidelines a
 
 5. **Create a Pull Request** with a clear description of your changes
 
-## Testing
-
-- Write tests for new features in the `tests/` directory
-- Ensure all tests pass: `pytest`
-- Aim for high test coverage, especially for critical components
-- Use descriptive test names that explain what is being tested
-
-## Reporting Issues
-
-- Use GitHub Issues for bug reports and feature requests
-- Provide clear steps to reproduce bugs
-- Include relevant system information and logs
-
-## Documentation
-
-- Update relevant documentation for new features
-- Keep the README.md up to date
-
-## Questions?
-
-Feel free to open an issue or discussion for questions.

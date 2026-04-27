@@ -64,6 +64,10 @@ class DataPlaneCollector:
         # eBPF components
         self._bpf = None
 
+        # Offset to convert bpf_ktime_get_ns() (boot-relative) to wall-clock ns.
+        # Computed once at startup; refreshed on eBPF program load.
+        self._ktime_offset_ns: int = self._compute_ktime_offset()
+
         # Telemetry components
         dp_config = config.get("data_plane", {})
         self._buffer = TelemetryBuffer(
@@ -101,6 +105,27 @@ class DataPlaneCollector:
         hostname = socket.gethostname()
         unique_suffix = uuid.uuid4().hex[:8]
         return f"dp-{hostname}-{unique_suffix}"
+
+    @staticmethod
+    def _compute_ktime_offset() -> int:
+        """Return (wall_clock_ns - bpf_ktime_ns) so that adding the offset to any
+        bpf_ktime_get_ns() value yields nanoseconds since the Unix epoch.
+
+        Uses /proc/uptime (available on all Linux kernels) to get uptime in
+        seconds, then derives boot epoch from current wall-clock time.
+        """
+        try:
+            with open("/proc/uptime", "r") as f:
+                uptime_s = float(f.read().split()[0])
+            wall_ns = int(time.time() * 1_000_000_000)
+            ktime_ns = int(uptime_s * 1_000_000_000)
+            return wall_ns - ktime_ns
+        except Exception as e:
+            logger.warning(
+                f"Could not compute ktime offset from /proc/uptime: {e}. "
+                "Timestamps will fall back to wall-clock time of poll batch."
+            )
+            return 0
 
     def _load_ebpf_program(self):
 
@@ -173,8 +198,10 @@ class DataPlaneCollector:
                 # Cast the raw data to our event structure
                 event = ctypes.cast(data, ctypes.POINTER(ConnectionEventCType)).contents
 
-                # Convert to Python object
-                conn_event = ConnectionEvent.from_ctype(event, self.node_id)
+                # Convert to Python object, applying the ktime→wall-clock offset
+                conn_event = ConnectionEvent.from_ctype(
+                    event, self.node_id, self._ktime_offset_ns
+                )
 
                 # Apply whitelist filtering
                 if self._should_filter(conn_event):
@@ -267,6 +294,8 @@ class DataPlaneCollector:
         # Load and attach eBPF program
         self._bpf = self._load_ebpf_program()
         self._attach_ebpf_program()
+        # Refresh the ktime offset now that we know the eBPF clock is running
+        self._ktime_offset_ns = self._compute_ktime_offset()
         self._setup_ring_buffer()
 
         # Start exporter
