@@ -454,5 +454,172 @@ class TestAlertSeverity:
         assert AlertSeverity.CRITICAL.syslog_priority == logging.CRITICAL
 
 
+class TestWhitelist:
+
+    def setup_method(self):
+
+        self.storage = ConnectionStorage()
+        self.detector = BeaconDetector(DetectorConfig(min_connections=5))
+        self.alert_manager = Mock(spec=AlertManager)
+        self.alert_manager.send_alert = Mock()
+
+    def test_whitelist_source_ip(self):
+
+        whitelist = {"source_ips": ["192.168.1.100"]}
+        analyzer = ConnectionAnalyzer(
+            storage=self.storage,
+            detector=self.detector,
+            alert_manager=self.alert_manager,
+            whitelist=whitelist,
+        )
+        pair = ConnectionPair(
+            src_ip="192.168.1.100", dst_ip="10.0.0.1", dst_port=443, protocol="TCP"
+        )
+        assert analyzer._is_whitelisted(pair) is True
+
+    def test_whitelist_destination_ip(self):
+
+        whitelist = {"destination_ips": ["10.0.0.1"]}
+        analyzer = ConnectionAnalyzer(
+            storage=self.storage,
+            detector=self.detector,
+            alert_manager=self.alert_manager,
+            whitelist=whitelist,
+        )
+        pair = ConnectionPair(
+            src_ip="192.168.1.100", dst_ip="10.0.0.1", dst_port=443, protocol="TCP"
+        )
+        assert analyzer._is_whitelisted(pair) is True
+
+    def test_whitelist_port(self):
+
+        whitelist = {"ports": [53, 123]}
+        analyzer = ConnectionAnalyzer(
+            storage=self.storage,
+            detector=self.detector,
+            alert_manager=self.alert_manager,
+            whitelist=whitelist,
+        )
+        pair = ConnectionPair(
+            src_ip="192.168.1.100", dst_ip="10.0.0.1", dst_port=53, protocol="UDP"
+        )
+        assert analyzer._is_whitelisted(pair) is True
+
+    def test_whitelist_pair(self):
+
+        whitelist = {"pairs": ["192.168.1.100:10.0.0.1:443"]}
+        analyzer = ConnectionAnalyzer(
+            storage=self.storage,
+            detector=self.detector,
+            alert_manager=self.alert_manager,
+            whitelist=whitelist,
+        )
+        pair = ConnectionPair(
+            src_ip="192.168.1.100", dst_ip="10.0.0.1", dst_port=443, protocol="TCP"
+        )
+        assert analyzer._is_whitelisted(pair) is True
+
+    def test_no_whitelist_match(self):
+
+        whitelist = {"source_ips": ["10.10.10.10"]}
+        analyzer = ConnectionAnalyzer(
+            storage=self.storage,
+            detector=self.detector,
+            alert_manager=self.alert_manager,
+            whitelist=whitelist,
+        )
+        pair = ConnectionPair(
+            src_ip="192.168.1.100", dst_ip="10.0.0.1", dst_port=443, protocol="TCP"
+        )
+        assert analyzer._is_whitelisted(pair) is False
+
+    def test_empty_whitelist(self):
+
+        analyzer = ConnectionAnalyzer(
+            storage=self.storage,
+            detector=self.detector,
+            alert_manager=self.alert_manager,
+            whitelist={},
+        )
+        pair = ConnectionPair(
+            src_ip="192.168.1.100", dst_ip="10.0.0.1", dst_port=443, protocol="TCP"
+        )
+        assert analyzer._is_whitelisted(pair) is False
+
+    def test_analysis_run_skips_whitelisted(self):
+
+        whitelist = {"destination_ips": ["10.0.0.1"]}
+        analyzer = ConnectionAnalyzer(
+            storage=self.storage,
+            detector=self.detector,
+            alert_manager=self.alert_manager,
+            config=AnalyzerConfig(min_connections=5, min_duration=60),
+            whitelist=whitelist,
+        )
+
+        base_time = time.time()
+        # Add whitelisted pair
+        for i in range(20):
+            record = ConnectionRecord(
+                timestamp_ns=int((base_time + i * 60) * 1e9),
+                timestamp_utc=f"2024-01-01T00:{i:02d}:00Z",
+                src_ip="192.168.1.100",
+                dst_ip="10.0.0.1",
+                src_port=54321,
+                dst_port=443,
+                packet_size=1500,
+                protocol=6,
+                protocol_name="TCP",
+                tcp_flags=0x10,
+                direction=1,
+                node_id="test-node",
+                connection_key="192.168.1.100:54321->10.0.0.1:443/TCP",
+            )
+            record.timestamp_epoch = base_time + i * 60
+            self.storage.add_record(record)
+
+        # Add non-whitelisted pair
+        for i in range(20):
+            record = ConnectionRecord(
+                timestamp_ns=int((base_time + i * 60) * 1e9),
+                timestamp_utc=f"2024-01-01T00:{i:02d}:00Z",
+                src_ip="192.168.1.200",
+                dst_ip="10.0.0.2",
+                src_port=54322,
+                dst_port=80,
+                packet_size=1500,
+                protocol=6,
+                protocol_name="TCP",
+                tcp_flags=0x10,
+                direction=1,
+                node_id="test-node",
+                connection_key="192.168.1.200:54322->10.0.0.2:80/TCP",
+            )
+            record.timestamp_epoch = base_time + i * 60
+            self.storage.add_record(record)
+
+        run = analyzer.run_analysis()
+
+        assert run.pairs_skipped == 1
+        assert run.pairs_analyzed == 1
+
+    def test_update_whitelist(self):
+
+        analyzer = ConnectionAnalyzer(
+            storage=self.storage,
+            detector=self.detector,
+            alert_manager=self.alert_manager,
+            whitelist={},
+        )
+
+        pair = ConnectionPair(
+            src_ip="192.168.1.100", dst_ip="10.0.0.1", dst_port=443, protocol="TCP"
+        )
+        assert analyzer._is_whitelisted(pair) is False
+
+        analyzer.update_whitelist({"source_ips": ["192.168.1.100"]})
+        assert analyzer._is_whitelisted(pair) is True
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

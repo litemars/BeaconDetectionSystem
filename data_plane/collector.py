@@ -8,6 +8,7 @@ Usage:
 import argparse
 import ctypes
 import logging
+import logging.handlers
 import os
 import signal
 import sys
@@ -377,6 +378,46 @@ def load_config(config_path: str):
         return yaml.safe_load(f)
 
 
+def setup_logging(config):
+
+    log_config = config.get("logging", {})
+
+    level_str = log_config.get("level", "INFO")
+    level = getattr(logging, level_str.upper(), logging.INFO)
+
+    logging.getLogger().setLevel(level)
+    logging.getLogger("beacon_detect").setLevel(level)
+
+    log_file = log_config.get("file")
+    if log_file:
+        try:
+            log_path = Path(log_file)
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+
+            handler = logging.handlers.RotatingFileHandler(
+                log_path,
+                maxBytes=log_config.get("max_size_mb", 50) * 1024 * 1024,
+                backupCount=log_config.get("backup_count", 5),
+            )
+
+            log_format = log_config.get("format", "text")
+            if log_format == "json":
+                from pythonjsonlogger import jsonlogger
+
+                formatter = jsonlogger.JsonFormatter(
+                    "%(asctime)s %(name)s %(levelname)s %(message)s %(pathname)s %(lineno)d"
+                )
+            else:
+                formatter = logging.Formatter(
+                    "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+                )
+
+            handler.setFormatter(formatter)
+            logging.getLogger().addHandler(handler)
+        except Exception as e:
+            logger.warning(f"Could not set up file logging: {e}")
+
+
 def setup_signal_handlers(collector):
 
     def signal_handler(signum, frame):
@@ -420,6 +461,9 @@ def main():
     except Exception as e:
         logger.error(f"Failed to load configuration: {e}")
         sys.exit(1)
+
+    # Set up logging from config
+    setup_logging(config)
 
     # Determine interface
     interface = args.interface or config.get("data_plane", {}).get("interface")

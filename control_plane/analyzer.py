@@ -69,6 +69,7 @@ class AnalysisRun:
         self.pairs_suppressed = 0
         self.beacons_detected = 0
         self.alerts_generated = 0
+        self.pairs_skipped = 0
         self.errors = 0
         self.results: List[DetectionResult] = []
 
@@ -90,6 +91,7 @@ class AnalysisRun:
             "pairs_suppressed": int(self.pairs_suppressed),
             "beacons_detected": int(self.beacons_detected),
             "alerts_generated": int(self.alerts_generated),
+            "pairs_skipped": int(self.pairs_skipped),
             "errors": int(self.errors),
         }
 
@@ -102,11 +104,15 @@ class ConnectionAnalyzer:
         detector: BeaconDetector,
         alert_manager: AlertManager,
         config=None,
+        whitelist: dict = None,
+        persistence=None,
     ):
         self.storage = storage
         self.detector = detector
         self.alert_manager = alert_manager
         self.config = config or AnalyzerConfig()
+        self._whitelist = whitelist or {}
+        self._persistence = persistence
 
         self._lock = threading.RLock()
         self._alert_cooldowns: Dict[str, float] = {}
@@ -128,6 +134,29 @@ class ConnectionAnalyzer:
         logger.info(
             f"ConnectionAnalyzer initialized: interval={self.config.analysis_interval}s"
         )
+
+    def _is_whitelisted(self, pair) -> bool:
+        """Check if a connection pair matches any whitelist rule."""
+        if pair.src_ip in self._whitelist.get("source_ips", []):
+            return True
+
+        if pair.dst_ip in self._whitelist.get("destination_ips", []):
+            return True
+
+        if pair.dst_port in self._whitelist.get("ports", []):
+            return True
+
+        pair_str = f"{pair.src_ip}:{pair.dst_ip}:{pair.dst_port}"
+        if pair_str in self._whitelist.get("pairs", []):
+            return True
+
+        return False
+
+    def update_whitelist(self, whitelist: dict):
+        """Update whitelist configuration (thread-safe)."""
+        with self._lock:
+            self._whitelist = whitelist or {}
+        logger.info("Whitelist updated")
 
     def start(self):
 
@@ -242,6 +271,17 @@ class ConnectionAnalyzer:
                     with self._lock:
                         self._known_beacons[result.pair_key] = result
 
+                    # Persist beacon to database
+                    if self._persistence:
+                        try:
+                            self._persistence.save_beacon(
+                                result.pair_key, result.to_dict()
+                            )
+                        except Exception as e:
+                            logger.error(
+                                f"Failed to persist beacon {result.pair_key}: {e}"
+                            )
+
                 except Exception as e:
                     logger.error(f"Error generating alert for {result.pair_key}: {e}")
                     run.errors += 1
@@ -254,6 +294,13 @@ class ConnectionAnalyzer:
                 ]
                 for key in stale_keys:
                     del self._known_beacons[key]
+                    if self._persistence:
+                        try:
+                            self._persistence.remove_beacon(key)
+                        except Exception as e:
+                            logger.error(
+                                f"Failed to remove beacon {key} from database: {e}"
+                            )
 
         except Exception as e:
             logger.error(f"Analysis run error: {e}", exc_info=True)
@@ -360,6 +407,26 @@ class ConnectionAnalyzer:
         runs = self._run_history[-limit:]
         return [r.to_dict() for r in reversed(runs)]
 
+    def load_historical_beacons(self):
+        """Load known beacons from persistence on startup."""
+        if not self._persistence:
+            return
+
+        try:
+            beacon_dicts = self._persistence.load_beacons()
+            for pair_key, detection_dict in beacon_dicts.items():
+                try:
+                    result = DetectionResult.from_dict(detection_dict)
+                    self._known_beacons[pair_key] = result
+                except Exception as e:
+                    logger.warning(f"Failed to restore beacon {pair_key}: {e}")
+
+            logger.info(
+                f"Loaded {len(self._known_beacons)} historical beacons from database"
+            )
+        except Exception as e:
+            logger.error(f"Failed to load historical beacons: {e}")
+
     @property
     def statistics(self) -> dict:
         return {
@@ -371,6 +438,10 @@ class ConnectionAnalyzer:
             "total_suppressed": self._total_suppressed,
             "current_known_beacons": len(self._known_beacons),
             "active_cooldowns": len(self._alert_cooldowns),
-            "benign_baseline_enabled": self.config.benign_baseline_enabled,
-            "benign_pattern_count": len(self.config.get_effective_benign_patterns()),
+            "whitelist_rules": {
+                "source_ips": len(self._whitelist.get("source_ips", [])),
+                "destination_ips": len(self._whitelist.get("destination_ips", [])),
+                "ports": len(self._whitelist.get("ports", [])),
+                "pairs": len(self._whitelist.get("pairs", [])),
+            },
         }
