@@ -67,20 +67,37 @@ class ConnectionEvent:
     def __post_init__(self):
 
         if self.timestamp_utc is None:
-            # Convert kernel timestamp to UTC datetime string
-            # Note: bpf_ktime_get_ns() returns time since boot, not epoch
-            # We'll use current time for UTC representation
+            # Fall back to current wall-clock time when no ktime offset is available.
+            # Callers that have a ktime offset should pass timestamp_utc explicitly
+            # via from_ctype(event, node_id, ktime_offset_ns=...).
             self.timestamp_utc = (
                 datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
             )
 
     @classmethod
-    def from_ctype(cls, event: ConnectionEventCType, node_id: str = None):
+    def from_ctype(
+        cls, event: ConnectionEventCType, node_id: str = None, ktime_offset_ns: int = 0
+    ):
+        """Create a ConnectionEvent from the C-type structure.
+
+        ktime_offset_ns is the value of (wall_clock_ns - bpf_ktime_ns) computed
+        once at collector startup from /proc/uptime.  Adding it to the kernel
+        timestamp converts boot-relative nanoseconds to UTC epoch nanoseconds.
         """
-        Create a ConnectionEvent from the C-type structure.
-        """
+        if ktime_offset_ns:
+            epoch_ns = event.timestamp_ns + ktime_offset_ns
+            epoch_s = epoch_ns / 1e9
+            ts_utc = (
+                datetime.fromtimestamp(epoch_s, tz=timezone.utc)
+                .isoformat()
+                .replace("+00:00", "Z")
+            )
+        else:
+            epoch_ns = event.timestamp_ns
+            ts_utc = None  # __post_init__ will set wall-clock fallback
+
         return cls(
-            timestamp_ns=event.timestamp_ns,
+            timestamp_ns=epoch_ns,
             src_ip=cls._int_to_ip(event.src_ip),
             dst_ip=cls._int_to_ip(event.dst_ip),
             src_port=event.src_port,
@@ -89,6 +106,7 @@ class ConnectionEvent:
             protocol=event.protocol,
             tcp_flags=event.tcp_flags,
             direction=event.direction,
+            timestamp_utc=ts_utc,
             node_id=node_id,
         )
 

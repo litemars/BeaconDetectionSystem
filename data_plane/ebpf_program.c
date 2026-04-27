@@ -23,9 +23,22 @@ struct connection_event {
     __u8  padding;           /* Alignment padding */
 };
 
-BPF_RINGBUF_OUTPUT(events, 1 << 16);  /* 64KB ring buffer per CPU */
+BPF_RINGBUF_OUTPUT(events, 1 << 16);  /* 64KB ring buffer */
 
-BPF_HASH(recent_connections, __u64, __u64, 65536);
+/*
+ * Deduplication map: keyed on the full 5-tuple to avoid XOR collisions.
+ * Value is the last-seen timestamp in nanoseconds.
+ */
+struct conn_key {
+    __u32 src_ip;
+    __u32 dst_ip;
+    __u16 src_port;
+    __u16 dst_port;
+    __u8  protocol;
+    __u8  pad[3];   /* explicit padding for struct alignment */
+};
+
+BPF_HASH(recent_connections, struct conn_key, __u64, 65536);
 
 BPF_ARRAY(stats, __u64, 8);
 
@@ -49,22 +62,25 @@ static __always_inline void update_stat(__u32 index) {
     }
 }
 
-static __always_inline int is_duplicate(__u32 src_ip, __u32 dst_ip, 
+static __always_inline int is_duplicate(__u32 src_ip, __u32 dst_ip,
                                          __u16 src_port, __u16 dst_port,
-                                         __u64 now_ns) {
-    /* Create connection key by XORing addresses and ports */
-    __u64 conn_key = ((__u64)src_ip << 32) | dst_ip;
-    conn_key ^= ((__u64)src_port << 16) | dst_port;
-    
-    __u64 *last_seen = recent_connections.lookup(&conn_key);
+                                         __u8 protocol, __u64 now_ns) {
+    struct conn_key key = {};
+    key.src_ip   = src_ip;
+    key.dst_ip   = dst_ip;
+    key.src_port = src_port;
+    key.dst_port = dst_port;
+    key.protocol = protocol;
+
+    __u64 *last_seen = recent_connections.lookup(&key);
     if (last_seen) {
         if ((now_ns - *last_seen) < DEDUP_WINDOW_NS) {
             update_stat(STAT_DEDUP_HITS);
-            return 1; 
+            return 1;
         }
     }
-    
-    recent_connections.update(&conn_key, &now_ns);
+
+    recent_connections.update(&key, &now_ns);
     return 0;
 }
 
@@ -140,7 +156,7 @@ static __always_inline int process_ipv4(void *data, void *data_end,
     //timestamp
     __u64 now_ns = bpf_ktime_get_ns();
     
-    if (is_duplicate(ip->saddr, ip->daddr, src_port, dst_port, now_ns)) {
+    if (is_duplicate(ip->saddr, ip->daddr, src_port, dst_port, protocol, now_ns)) {
         return 0;
     }
     

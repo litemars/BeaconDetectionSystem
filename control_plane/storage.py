@@ -130,19 +130,17 @@ class ConnectionPair:
 
     def prune_old(self, cutoff_time):
 
-        # Find index of first timestamp >= cutoff_time
         idx = bisect.bisect_left(self.timestamps, cutoff_time)
 
         if idx > 0:
             self.timestamps = self.timestamps[idx:]
-            # Can't easily prune packet_sizes without matching indices
-            # Keep recent ones proportionally
-            if self.packet_sizes:
-                keep_ratio = len(self.timestamps) / (len(self.timestamps) + idx)
-                keep_count = max(1, int(len(self.packet_sizes) * keep_ratio))
-                self.packet_sizes = self.packet_sizes[-keep_count:]
+            # packet_sizes is kept index-aligned with timestamps via add_connection(),
+            # so we can slice at the same index without any ratio estimation.
+            if len(self.packet_sizes) >= idx:
+                self.packet_sizes = self.packet_sizes[idx:]
+            else:
+                self.packet_sizes = []
 
-            # Update first_seen
             if self.timestamps:
                 self.first_seen = self.timestamps[0]
             else:

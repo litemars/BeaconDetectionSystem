@@ -104,12 +104,38 @@ class Alert:
         )
 
     def to_syslog_message(self):
-        return (
+        """Return a single-line syslog message.
+
+        When the alert's ``details`` dict contains an ``explanation`` with a
+        ``contributing_signals`` list (populated by BeaconDetector), the per-signal
+        scores and weights are appended for structured SIEM ingestion.
+        """
+        msg = (
             f"[{self.severity.value.upper()}] {self.title} | "
             f"Source: {self.source} | "
             f"ID: {self.alert_id} | "
             f"Description: {self.description}"
         )
+
+        # Append per-signal scores if available
+        try:
+            signals = (
+                self.details.get("explanation", {}).get("contributing_signals", [])
+                if isinstance(self.details, dict)
+                else []
+            )
+            if signals:
+                parts = [
+                    f"{s['name']}={s['score']:.2f}(w={s['weight']})"
+                    for s in signals
+                    if isinstance(s, dict) and "name" in s and "score" in s
+                ]
+                if parts:
+                    msg += f" | Signals: {', '.join(parts)}"
+        except Exception:
+            pass  # never let formatting failure suppress the syslog write
+
+        return msg
 
 
 @dataclass

@@ -3,6 +3,7 @@ venv
 vevn
 env
 ENV
+*
 .venv
 
 # Python

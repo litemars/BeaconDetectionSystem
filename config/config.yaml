@@ -56,48 +56,46 @@ control_plane:
 # =============================================================================
 detection:
   # Minimum number of connection events required before analysis
-  # Too low = false positives, too high = miss short beacon sessions
   min_connections: 10
-  
-  # Analysis time window in seconds
-  # Connection pairs are analyzed over this sliding window
+
+  # Minimum pair duration before analysis (seconds)
+  # A pair that has existed for less than this is not yet analyzed.
+  # At least 2x the expected beacon interval is recommended.
+  min_duration: 300
+
+  # Analysis time window in seconds (enforced at analysis time)
+  # Timestamps older than last_seen - time_window are excluded from scoring.
   time_window: 3600  # 1 hour
-  
+
   # Coefficient of Variation (CV) threshold
   # CV = std_dev / mean of intervals
-  # Lower values = more regular intervals (beacon-like)
-  # Typical beacons: CV < 0.1
-  # Normal traffic: CV > 0.3
+  # Typical beacons: CV < 0.1 — Normal traffic: CV > 0.3
   cv_threshold: 0.15
-  
+
   # FFT periodicity score threshold (0.0 to 1.0)
-  # Higher values indicate stronger periodic patterns
-  # Typical beacons: > 0.7
   periodicity_threshold: 0.7
-  
-  # Maximum allowed jitter in seconds
-  # Jitter = max deviation from median interval
-  # Lower jitter = more beacon-like
+
+  # Maximum allowed jitter in seconds (max deviation from median interval)
   jitter_threshold: 5.0
-  
-  # Minimum beacon interval to detect (seconds)
-  # Intervals shorter than this are ignored (likely not beacons)
-  min_beacon_interval: 10
-  
-  # Maximum beacon interval to detect (seconds)
-  # Intervals longer than this are ignored
-  max_beacon_interval: 3600
-  
-  # Scoring weights for combined detection
-  # Sum should equal 1.0
-  cv_weight: 0.4
-  periodicity_weight: 0.4
-  jitter_weight: 0.2
-  
-  # Final score threshold for alert (0.0 to 1.0)
+
+  # Interval bounds
+  min_beacon_interval: 10    # seconds
+  max_beacon_interval: 3600  # seconds
+
+  # Scoring weights — must sum to 1.0
+  # cv:          temporal regularity (coefficient of variation)
+  # periodicity: FFT-derived frequency dominance
+  # jitter:      max single-interval deviation from median
+  # size:        packet-size consistency (low CV of payload sizes)
+  cv_weight: 0.35
+  periodicity_weight: 0.35
+  jitter_weight: 0.15
+  size_weight: 0.15
+
+  # Combined score threshold for beacon classification (0.0 to 1.0)
   alert_threshold: 0.7
-  
-  # Cooldown period between alerts for same connection pair (seconds)
+
+  # Cooldown between alerts for the same connection pair (seconds)
   alert_cooldown: 300
 
 # =============================================================================
@@ -163,23 +161,92 @@ persistence:
 # WHITELIST CONFIGURATION
 # =============================================================================
 whitelist:
-  # IP addresses to exclude from analysis
-  # Use for known legitimate periodic services (NTP, health checks, etc.)
+  # IP/port allowlist applied in the data plane (before telemetry export).
   source_ips: []
     # - "10.0.0.1"
-    # - "192.168.1.1"
-  
   destination_ips: []
-    # - "8.8.8.8"  # Google DNS
-    # - "1.1.1.1"  # Cloudflare DNS
-  
-  # Destination ports to exclude
+    # - "8.8.8.8"
   ports: []
-    # - 53   # DNS
-    # - 123  # NTP
-    # - 443  # HTTPS (optional, may want to monitor this)
-  
-  # Specific source:destination pairs to exclude
-  # Format: "src_ip:dst_ip:dst_port"
+    # - 443
   pairs: []
     # - "10.0.0.5:192.168.1.1:80"
+
+# =============================================================================
+# BENIGN TRAFFIC BASELINE
+# =============================================================================
+# Applied in the analysis stage (control plane), before full scoring.
+# Pairs matching a pattern are suppressed and do not generate alerts.
+# Add entries for known-legitimate periodic services in your environment.
+#
+# Security note: DNS (UDP/53) is intentionally excluded from defaults because
+# DNS-over-UDP is a common C2 channel. Add it only if you have high confidence
+# in your resolver infrastructure.
+benign_baseline:
+  enabled: true
+  #
+  # Each pattern suppresses connection pairs whose destination port (and
+  # optionally protocol) match.  Suppressed pairs are logged with the label
+  # but never reach the FFT scorer.
+  #
+  # Guidance per service class:
+  #
+  #   NTP   — UDP/123. Safe to suppress; packet size (48 B) and interval
+  #            (~64 s) are very distinct from C2 beacons.
+  #
+  #   DNS   — UDP/53 and TCP/53. EXCLUDED from defaults: DNS-over-UDP is a
+  #            well-known C2 exfiltration channel.  Add only when you have
+  #            high confidence in your resolver infrastructure and DNS logs
+  #            are monitored by a separate analytic.
+  #
+  #   OCSP/CRL — TCP/80 toward PKI responders (Microsoft, DigiCert, etc.).
+  #            Port alone is too broad; suppress only when specific responder
+  #            IPs are known and stable.  Uncomment + restrict dst_ip if needed.
+  #
+  #   Windows Update — HTTPS (TCP/443) to update.microsoft.com, etc.
+  #            Port too broad.  Suppress only with specific IP or FQDN
+  #            allowlisting at the network layer.
+  #
+  #   Browser telemetry — TCP/443 at browser-specific intervals (~30–120 s).
+  #            No single port identifies these; handled best by allowlisting
+  #            the destination IP ranges rather than suppression here.
+  #
+  patterns:
+    # --- Always-on defaults ---
+    - dst_port: 123
+      protocol: UDP
+      label: NTP
+
+    # --- Commonly added in enterprise environments ---
+    # - dst_port: 53
+    #   protocol: UDP
+    #   label: DNS-UDP          # add only when DNS C2 risk is mitigated
+    # - dst_port: 53
+    #   protocol: TCP
+    #   label: DNS-TCP          # TCP/53 used for zone transfers and large responses
+    # - dst_port: 8125
+    #   protocol: UDP
+    #   label: StatsD            # metrics collection daemon
+    # - dst_port: 8126
+    #   protocol: TCP
+    #   label: StatsD-mgmt
+
+    # --- OCSP/CRL (uncomment when responder IPs are known and stable) ---
+    # - dst_port: 80
+    #   protocol: TCP
+    #   label: OCSP-HTTP        # certificate revocation checks over HTTP
+
+    # --- Windows Update (too broad by port alone; see guidance above) ---
+    # - dst_port: 443
+    #   protocol: TCP
+    #   label: WindowsUpdate    # DANGEROUS: port 443 is C2-relevant; only add
+    #                           # with destination IP allowlisting at firewall
+
+# =============================================================================
+# API SECURITY
+# =============================================================================
+# Set api_key to a non-empty secret to require X-API-Key authentication on
+# all write endpoints (POST /api/v1/telemetry, POST /api/v1/config, DELETE *).
+# Leave empty to disable authentication (default, suitable for localhost-only).
+# Read-only GET endpoints are always unauthenticated.
+#
+# Example: api_key: "change-me-before-production"
