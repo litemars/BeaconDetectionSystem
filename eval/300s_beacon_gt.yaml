@@ -1,0 +1,3 @@
+beacon_pairs:
+- 10.0.5.20->198.51.100.10:8443/TCP
+dataset: 300s_beacon

@@ -186,51 +186,68 @@ static __always_inline int process_ipv4(void *data, void *data_end,
     return 0;
 }
 
-// XDP enry point for connection tracking
+/*
+ * Hook deployment guide
+ * ─────────────────────
+ * XDP runs on the NIC RX path and is ingress-only.  To track outbound (egress)
+ * packets attach tc_egress_tracker via a TC clsact qdisc on the same interface.
+ *
+ * Preferred (full direction awareness):
+ *   XDP  ingress  → xdp_connection_tracker  (direction = INGRESS = 0)
+ *   TC   egress   → tc_egress_tracker        (direction = EGRESS  = 1)
+ *
+ * Fallback (XDP unavailable, e.g. virtual NICs without XDP driver support):
+ *   TC ingress → tc_ingress_tracker           (direction = INGRESS = 0)
+ *   TC egress  → tc_egress_tracker            (direction = EGRESS  = 1)
+ *
+ * The Python collector (data_plane/collector.py) attempts this attachment
+ * sequence automatically and logs the active mode on startup.
+ */
+
+/* XDP entry point — ingress (inbound) traffic only. */
 int xdp_connection_tracker(struct xdp_md *ctx) {
     void *data = (void *)(long)ctx->data;
     void *data_end = (void *)(long)ctx->data_end;
-    
+
     update_stat(STAT_PACKETS_TOTAL);
-    
+
     struct ethhdr *eth = data;
     if ((void *)(eth + 1) > data_end) {
         return XDP_PASS;
     }
-    
+
     // Only process IPv4 packets
     if (eth->h_proto != bpf_htons(ETH_P_IP)) {
         return XDP_PASS;
     }
-    
-    // Egress direction = 0 for XDP
+
+    // XDP is ingress-only: direction = 0 (INGRESS)
     process_ipv4(data, data_end, eth, 0);
-    
-    // Pass all packets to the network stack
+
+    // Pass all packets to the network stack unchanged
     return XDP_PASS;
 }
 
-// Alternative TC ingress program for tracking inbound connections
+/* TC clsact ingress hook — used as fallback when XDP is unavailable. */
 int tc_ingress_tracker(struct __sk_buff *skb) {
     void *data = (void *)(long)skb->data;
     void *data_end = (void *)(long)skb->data_end;
-    
+
     update_stat(STAT_PACKETS_TOTAL);
-    
-    // Ethernet header bounds check
+
     struct ethhdr *eth = data;
     if ((void *)(eth + 1) > data_end) {
         return TC_ACT_OK;
     }
-    
+
     // Only process IPv4 packets
     if (eth->h_proto != bpf_htons(ETH_P_IP)) {
         return TC_ACT_OK;
     }
-    
-    // Ingress direction only
+
+    // TC ingress: direction = 0 (INGRESS)
     process_ipv4(data, data_end, eth, 0);
-    
+
     return TC_ACT_OK;
 }
 

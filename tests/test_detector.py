@@ -294,14 +294,18 @@ class TestBeaconDetection:
             detector._determine_confidence(0.4, 0.4, 0.4, 0.4) == BeaconConfidence.LOW
         )
         assert (
-            detector._determine_confidence(0.6, 0.6, 0.6, 0.6)
+            detector._determine_confidence(0.6, 0.6, 0.6, 0.6) == BeaconConfidence.LOW
+        )
+        assert (
+            detector._determine_confidence(0.75, 0.75, 0.75, 0.75)
             == BeaconConfidence.MEDIUM
         )
         assert (
-            detector._determine_confidence(0.8, 0.8, 0.8, 0.8) == BeaconConfidence.HIGH
+            detector._determine_confidence(0.85, 0.85, 0.85, 0.85)
+            == BeaconConfidence.HIGH
         )
         assert (
-            detector._determine_confidence(0.9, 0.9, 0.9, 0.9, 0.9)
+            detector._determine_confidence(0.95, 0.5, 0.5, 0.5, 0.5)
             == BeaconConfidence.CRITICAL
         )
 
