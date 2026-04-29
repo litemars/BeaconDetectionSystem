@@ -1,0 +1,6 @@
+# Ground truth alias for the ntp_traffic dataset.
+# Identical to ntp_traffic_gt.yaml — provided for the DoD command:
+#   python replay.py --events eval/ntp_traffic.yaml --ground-truth eval/ntp_gt.yaml
+beacon_pairs:
+- 10.0.0.5->192.0.2.1:123/UDP
+dataset: ntp_traffic

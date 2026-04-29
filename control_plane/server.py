@@ -64,6 +64,10 @@ class ControlPlaneServer:
         self._batches_processed = 0
         self._events_received = 0
 
+        # Cumulative data-plane metrics (updated when batches include these stats)
+        self._ebpf_drops_total: int = 0
+        self._buffer_overflow_total: int = 0
+
         logger.info(f"ControlPlaneServer initialized: {self.host}:{self.port}")
 
     def _build_runtime_config(self, config):
@@ -202,6 +206,7 @@ class ControlPlaneServer:
         app.router.add_get("/api/v1/config", self._handle_get_config)
         app.router.add_post("/api/v1/config", self._handle_set_config)
         app.router.add_delete("/api/v1/beacons", self._handle_clear_beacons)
+        app.router.add_get("/api/v1/metrics", self._handle_metrics)
 
         # CORS preflight handler for all API routes
         app.router.add_route("OPTIONS", "/api/v1/{path:.*}", self._handle_options)
@@ -232,11 +237,92 @@ class ControlPlaneServer:
 
     async def _handle_health(self, request: web.Request) -> web.Response:
 
+        # Alert queue backpressure check
+        q = self.alert_manager._alert_queue
+        queue_size = q.qsize()
+        queue_maxsize = q.maxsize if q.maxsize > 0 else 1000
+        fill_pct = round(queue_size / queue_maxsize * 100, 1)
+        backpressure = fill_pct >= 80.0
+
+        if backpressure:
+            logger.warning(
+                f"Alert queue at {fill_pct:.1f}% capacity "
+                f"({queue_size}/{queue_maxsize}) — backpressure active"
+            )
+
         return web.json_response(
             {
                 "status": "healthy",
                 "timestamp": datetime.now(timezone.utc).isoformat() + "Z",
+                "alert_queue_fill_percent": fill_pct,
+                "alert_queue_backpressure": backpressure,
+                "alert_queue_drops": self.alert_manager._alerts_failed,
             }
+        )
+
+    async def _handle_metrics(self, request: web.Request) -> web.Response:
+        """Return runtime metrics in Prometheus text exposition format (version 0.0.4).
+
+        Metrics exposed:
+          beacon_detector_events_total        – counter; telemetry events received
+          beacon_detector_pairs_active        – gauge;   live connection pairs in storage
+          beacon_detector_analysis_duration_seconds – gauge; last analysis run wall time
+          beacon_detector_alerts_total        – counter; alerts generated since start
+          beacon_detector_buffer_overflow_total – counter; data-plane buffer drops
+          beacon_detector_ebpf_drops_total    – counter; eBPF ring-buffer drops
+        """
+        storage_stats = self.storage.statistics
+        pairs_active = storage_stats.get("pair_count", 0)
+
+        # Last analysis duration (seconds) from the most recent completed run
+        run_history = self.analyzer.get_run_history(limit=1)
+        last_duration = (
+            float(run_history[0].get("duration_seconds", 0.0)) if run_history else 0.0
+        )
+
+        alerts_total = self.analyzer.statistics.get("total_alerts_generated", 0)
+
+        lines = [
+            "# HELP beacon_detector_events_total"
+            " Total connection events received from all data plane nodes.",
+            "# TYPE beacon_detector_events_total counter",
+            f"beacon_detector_events_total {self._events_received}",
+            "",
+            "# HELP beacon_detector_pairs_active"
+            " Number of connection pairs currently held in storage.",
+            "# TYPE beacon_detector_pairs_active gauge",
+            f"beacon_detector_pairs_active {pairs_active}",
+            "",
+            "# HELP beacon_detector_analysis_duration_seconds"
+            " Wall-clock duration of the most recent analysis run in seconds.",
+            "# TYPE beacon_detector_analysis_duration_seconds gauge",
+            f"beacon_detector_analysis_duration_seconds {last_duration:.6f}",
+            "",
+            "# HELP beacon_detector_alerts_total"
+            " Total beacon alerts generated since control plane startup.",
+            "# TYPE beacon_detector_alerts_total counter",
+            f"beacon_detector_alerts_total {alerts_total}",
+            "",
+            "# HELP beacon_detector_buffer_overflow_total"
+            " Events discarded by the data plane telemetry buffer due to overflow.",
+            "# TYPE beacon_detector_buffer_overflow_total counter",
+            f"beacon_detector_buffer_overflow_total {self._buffer_overflow_total}",
+            "",
+            "# HELP beacon_detector_ebpf_drops_total"
+            " Events dropped by the eBPF ring buffer (insufficient consumer bandwidth).",
+            "# TYPE beacon_detector_ebpf_drops_total counter",
+            f"beacon_detector_ebpf_drops_total {self._ebpf_drops_total}",
+            "",
+        ]
+
+        body = "\n".join(lines)
+        # aiohttp forbids mixing `text=`/`content_type=` with a custom
+        # Content-Type header, so we pass raw bytes and set the header directly.
+        return web.Response(
+            body=body.encode("utf-8"),
+            headers={
+                "Content-Type": "text/plain; version=0.0.4; charset=utf-8"
+            },
         )
 
     async def _handle_status(self, request: web.Request) -> web.Response:
@@ -269,6 +355,9 @@ class ControlPlaneServer:
                 "requests_received": self._requests_received,
                 "batches_processed": self._batches_processed,
                 "events_received": self._events_received,
+                "alert_queue_drops": self.alert_manager._alerts_failed,
+                "ebpf_drops_total": self._ebpf_drops_total,
+                "buffer_overflow_total": self._buffer_overflow_total,
                 "storage": self.storage.statistics,
                 "analyzer": self.analyzer.statistics,
                 "alerter": self.alert_manager.statistics,
@@ -329,6 +418,14 @@ class ControlPlaneServer:
 
             self._batches_processed += 1
             self._events_received += len(events)
+
+            # Accumulate data-plane stats when the batch includes them.
+            # Data plane sets these in a 'data_plane_stats' dict; missing keys → 0.
+            dp_stats = data.get("data_plane_stats", {})
+            self._ebpf_drops_total += int(dp_stats.get("events_dropped_ebpf", 0))
+            self._buffer_overflow_total += int(
+                dp_stats.get("events_dropped_overflow", 0)
+            )
 
             logger.info(
                 f"Received batch {batch_id} from {node_id}: " f"{len(events)} events"

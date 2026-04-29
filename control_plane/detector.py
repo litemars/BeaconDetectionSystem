@@ -478,24 +478,18 @@ class BeaconDetector:
         jitter_score: float,
         size_score: float = 0.5,
     ) -> BeaconConfidence:
-
+        # Thresholds match the user-facing severity ladder shown in the README
+        # and used by control_plane.cli.format_severity.
         if combined_score < 0.3:
             return BeaconConfidence.NONE
-        elif combined_score < 0.5:
-            return BeaconConfidence.LOW
         elif combined_score < 0.7:
+            return BeaconConfidence.LOW
+        elif combined_score < 0.8:
             return BeaconConfidence.MEDIUM
-        elif combined_score < 0.85:
+        elif combined_score < 0.9:
             return BeaconConfidence.HIGH
         else:
-            # CRITICAL requires all four signals to be individually strong
-            all_strong = (
-                cv_score > 0.7
-                and periodicity_score > 0.7
-                and jitter_score > 0.7
-                and size_score > 0.7
-            )
-            return BeaconConfidence.CRITICAL if all_strong else BeaconConfidence.HIGH
+            return BeaconConfidence.CRITICAL
 
     # ------------------------------------------------------------------
     # Analyst-facing explanation

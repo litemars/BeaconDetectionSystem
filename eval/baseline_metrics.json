@@ -1,0 +1,75 @@
+{
+  "description": "Baseline precision/recall/F1 for each synthetic eval dataset",
+  "detector_config": {
+    "alert_threshold": 0.6,
+    "min_connections": 8,
+    "benign_baseline_enabled": false
+  },
+  "datasets": {
+    "60s_beacon": {
+      "true_positives": 1,
+      "false_positives": 0,
+      "false_negatives": 0,
+      "true_negatives": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "false_positive_rate": 0.0,
+      "analysis_duration_ms": 2.3,
+      "events_injected": 80,
+      "pairs_evaluated": 1
+    },
+    "300s_beacon": {
+      "true_positives": 1,
+      "false_positives": 0,
+      "false_negatives": 0,
+      "true_negatives": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "false_positive_rate": 0.0,
+      "analysis_duration_ms": 4.3,
+      "events_injected": 30,
+      "pairs_evaluated": 1
+    },
+    "ntp_traffic": {
+      "true_positives": 1,
+      "false_positives": 0,
+      "false_negatives": 0,
+      "true_negatives": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "false_positive_rate": 0.0,
+      "analysis_duration_ms": 1.1,
+      "events_injected": 40,
+      "pairs_evaluated": 1
+    },
+    "mixed": {
+      "true_positives": 2,
+      "false_positives": 0,
+      "false_negatives": 0,
+      "true_negatives": 1,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "false_positive_rate": 0.0,
+      "analysis_duration_ms": 1.7,
+      "events_injected": 100,
+      "pairs_evaluated": 3
+    },
+    "random_traffic": {
+      "true_positives": 0,
+      "false_positives": 0,
+      "false_negatives": 0,
+      "true_negatives": 3,
+      "precision": 1.0,
+      "recall": 0.0,
+      "f1": 0.0,
+      "false_positive_rate": 0.0,
+      "analysis_duration_ms": 1.0,
+      "events_injected": 60,
+      "pairs_evaluated": 3
+    }
+  }
+}

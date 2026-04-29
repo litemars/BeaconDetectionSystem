@@ -10,6 +10,7 @@ import ctypes
 import logging
 import os
 import signal
+import subprocess
 import sys
 import threading
 import time
@@ -155,40 +156,147 @@ class DataPlaneCollector:
             logger.error(f"Failed to compile eBPF program: {e}")
             raise
 
-    def _attach_ebpf_program(self):
+    # ------------------------------------------------------------------
+    # eBPF attachment helpers
+    #
+    # Direction-awareness strategy
+    # ─────────────────────────────
+    # XDP runs at the earliest possible point on the NIC driver RX path and
+    # therefore only sees *ingress* (inbound) traffic.  To also track *egress*
+    # (outbound) traffic we attach a TC (Traffic Control) clsact BPF filter on
+    # the egress hook of the same interface.
+    #
+    # Preferred deployment (full direction awareness):
+    #   XDP ingress  (xdp_connection_tracker, direction=0)
+    #   TC  egress   (tc_egress_tracker,       direction=1)
+    #
+    # Fallback (XDP unavailable, e.g. virtualised NICs):
+    #   TC ingress   (tc_ingress_tracker,  direction=0)
+    #   TC egress    (tc_egress_tracker,   direction=1)
+    #
+    # If egress attachment also fails only ingress events are recorded and the
+    # direction field will always be 0.
+    # ------------------------------------------------------------------
 
+    def _setup_tc_clsact_qdisc(self):
+        """Add a clsact qdisc to the interface (idempotent — ignores EEXIST)."""
+        result = subprocess.run(
+            ["tc", "qdisc", "add", "dev", self.interface, "clsact"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0 and "already exists" not in result.stderr:
+            logger.debug(f"tc qdisc add clsact: {result.stderr.strip()}")
+
+    def _attach_tc_filter(self, fn, direction: str):
+        """Attach a loaded BPF SCHED_CLS function as a direct-action TC filter.
+
+        direction must be "ingress" or "egress".  The function's file descriptor
+        is inherited by the subprocess (pass_fds).
+        """
+        result = subprocess.run(
+            [
+                "tc", "filter", "add",
+                "dev", self.interface,
+                direction,
+                "bpf", "direct-action",
+                "fd", str(fn.fd),
+                "sec", fn.name,
+            ],
+            pass_fds=(fn.fd,),
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"tc filter add {direction} failed: {result.stderr.strip()}"
+            )
+
+    def _attach_ebpf_program(self):
         logger.info(f"Attaching eBPF program to interface {self.interface}")
 
-        # Try XDP first (best performance), fall back to TC
+        xdp_ok = False
+        tc_ingress_ok = False
+        tc_egress_ok = False
+
+        # ── Step 1: ingress hook (XDP preferred) ──────────────────────────
         try:
-            # Attach XDP program
-            fn = self._bpf.load_func("xdp_connection_tracker", BPF.XDP)
-            self._bpf.attach_xdp(self.interface, fn, 0)
-            logger.info(f"Attached XDP program to {self.interface}")
-            self._attachment_mode = "xdp"
-        except Exception as e:
-            logger.warning(f"XDP attachment failed, trying TC: {e}")
+            fn_xdp = self._bpf.load_func("xdp_connection_tracker", BPF.XDP)
+            self._bpf.attach_xdp(self.interface, fn_xdp, 0)
+            logger.info(f"XDP ingress attached to {self.interface}")
+            xdp_ok = True
+        except Exception as xdp_err:
+            logger.warning(f"XDP unavailable on {self.interface}: {xdp_err}")
 
-            # Fall back to TC (Traffic Control)
+        # ── Step 2: TC egress hook (always attempted for direction awareness) ──
+        try:
+            self._setup_tc_clsact_qdisc()
+            fn_egress = self._bpf.load_func("tc_egress_tracker", BPF.SCHED_CLS)
+            self._attach_tc_filter(fn_egress, "egress")
+            logger.info(f"TC egress attached to {self.interface}")
+            tc_egress_ok = True
+        except Exception as eg_err:
+            logger.warning(
+                f"TC egress attachment failed on {self.interface}: {eg_err}; "
+                "outbound events will not be captured"
+            )
+
+        # ── Step 3: TC ingress fallback (only when XDP failed) ────────────
+        if not xdp_ok:
             try:
-                # Attach TC ingress
-                fn_ingress = self._bpf.load_func("tc_ingress_tracker", BPF.SCHED_CLS)
-                self._bpf.attach_raw_socket(fn_ingress, self.interface)
+                # clsact qdisc may already exist from step 2
+                if not tc_egress_ok:
+                    self._setup_tc_clsact_qdisc()
+                fn_ingress = self._bpf.load_func(
+                    "tc_ingress_tracker", BPF.SCHED_CLS
+                )
+                self._attach_tc_filter(fn_ingress, "ingress")
+                logger.info(f"TC ingress attached to {self.interface}")
+                tc_ingress_ok = True
+            except Exception as ing_err:
+                logger.error(
+                    f"TC ingress attachment failed on {self.interface}: {ing_err}"
+                )
 
-                logger.info(f"Attached TC program to {self.interface}")
-                self._attachment_mode = "tc"
-            except Exception as e2:
-                logger.error(f"Failed to attach eBPF program: {e2}")
-                raise RuntimeError(f"Could not attach eBPF program: {e2}")
+        if not xdp_ok and not tc_ingress_ok:
+            raise RuntimeError(
+                f"Could not attach any ingress eBPF hook to {self.interface}"
+            )
+
+        if xdp_ok and tc_egress_ok:
+            self._attachment_mode = "xdp+tc_egress"
+        elif xdp_ok:
+            self._attachment_mode = "xdp"
+        elif tc_ingress_ok and tc_egress_ok:
+            self._attachment_mode = "tc_both"
+        else:
+            self._attachment_mode = "tc_ingress"
+
+        logger.info(f"eBPF attachment mode: {self._attachment_mode}")
 
     def _detach_ebpf_program(self):
-        if self._bpf and hasattr(self, "_attachment_mode"):
-            try:
-                if self._attachment_mode == "xdp":
-                    self._bpf.remove_xdp(self.interface, 0)
-                logger.info(f"Detached eBPF program from {self.interface}")
-            except Exception as e:
-                logger.warning(f"Error detaching eBPF program: {e}")
+        if not self._bpf or not hasattr(self, "_attachment_mode"):
+            return
+        mode = self._attachment_mode
+        try:
+            if "xdp" in mode:
+                self._bpf.remove_xdp(self.interface, 0)
+                logger.info(f"Removed XDP hook from {self.interface}")
+        except Exception as e:
+            logger.warning(f"Error removing XDP hook: {e}")
+        if "tc" in mode:
+            # Removing the clsact qdisc atomically removes all TC filters.
+            result = subprocess.run(
+                ["tc", "qdisc", "del", "dev", self.interface, "clsact"],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+                logger.warning(
+                    f"tc qdisc del clsact: {result.stderr.strip()}"
+                )
+            else:
+                logger.info(f"Removed TC clsact qdisc from {self.interface}")
 
     def _setup_ring_buffer(self):
 
@@ -378,11 +486,18 @@ def load_config(config_path: str):
 
 
 def setup_signal_handlers(collector):
+    """Register SIGINT / SIGTERM handlers that trigger a clean shutdown.
+
+    The handler sets the shutdown event instead of calling sys.exit() so that
+    the main loop's ``finally`` block can flush in-flight telemetry and detach
+    the eBPF hooks before the process exits.
+    """
 
     def signal_handler(signum, frame):
-        logger.info(f"Received signal {signum}, initiating shutdown...")
-        collector.stop()
-        sys.exit(0)
+        sig_name = "SIGTERM" if signum == signal.SIGTERM else "SIGINT"
+        logger.info(f"Received {sig_name}, initiating graceful shutdown…")
+        # Signal the main event loop to exit cleanly.
+        collector._shutdown_event.set()
 
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)

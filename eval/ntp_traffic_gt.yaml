@@ -1,0 +1,3 @@
+beacon_pairs:
+- 10.0.0.5->192.0.2.1:123/UDP
+dataset: ntp_traffic

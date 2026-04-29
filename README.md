@@ -1,13 +1,26 @@
 # eBPF Beacon Detection System
 
-A network beacon detection system using eBPF for packet capture and statistical analysis for identifying command-and-control (C2) beaconing patterns.
+A network beacon detector. The data plane uses eBPF (XDP for ingress, TC clsact for egress) to capture connection events at low overhead. The control plane runs statistical analysis over per-pair intervals and flags command-and-control (C2) traffic.
 
-## Features
+Most C2 implants phone home on a schedule. Operators add jitter, sleep cycles, and traffic mimicry, but the underlying regularity usually still survives if you measure intervals carefully. That is what this tool measures.
 
-- **FFT Periodicity Analysis**: Detect regular communication patterns using Fast Fourier Transform
-- **CV Scoring**: Coefficient of Variation analysis for interval consistency
-- **Jitter Analysis**: Detect timing patterns even with randomization
-- **Multi-channel Alerting**: Syslog, file, and webhook alert channels
+## Detection signals
+
+Each connection pair gets a combined score from four signals. Weights live in `config.yaml`; the defaults sum to 1.0.
+
+- **Coefficient of variation (35%).** Tight intervals produce low CV. Implants score low, bursty human traffic scores high.
+- **FFT periodicity (35%).** A dominant peak in the frequency domain is the single strongest indicator we have.
+- **Jitter (15%).** Maximum deviation from the median interval. Catches randomized timing that is still bounded.
+- **Packet-size CV (15%).** Implants tend to send near-identical payloads. Browsers do not.
+
+A pair scoring at or above 0.7 generates an alert. Severity follows the score:
+
+| Score   | Severity  | What it usually means                 |
+|---------|-----------|---------------------------------------|
+| ≥ 0.90  | CRITICAL  | High-confidence beacon, investigate now |
+| ≥ 0.80  | HIGH      | Likely beacon                         |
+| ≥ 0.70  | MEDIUM    | Suspicious, worth a look              |
+| < 0.70  | LOW       | Probably noise                        |
 
 ## Architecture
 
@@ -30,55 +43,42 @@ A network beacon detection system using eBPF for packet capture and statistical 
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-## Quick Start
+The data plane lives in the kernel and emits connection events. The control plane is a plain HTTP service that scores them and routes alerts. They talk over `/api/v1/telemetry`, so you can run them on one host or split them across two.
 
-### 1. Install Dependencies
+## Quick start
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 2. Start Control Plane
+Run the control plane (no root needed):
 
 ```bash
-cd beacon-detect
 python3 -m control_plane.server -c config/config.yaml
 ```
 
-### 3. Start Data Plane
+Run the data plane (eBPF needs root):
 
 ```bash
-cd beacon-detect
 sudo python3 -m data_plane.collector -c ./config/config.yaml
 ```
 
-### 4. Use CLI to Monitor
+Then drive everything from the CLI:
 
 ```bash
-# Check system status (live/offline)
-python3 -m control_plane.cli status
-
-# View detected beacons
-python3 -m control_plane.cli beacons
-
-# View beacons with high score (>=80%)
+python3 -m control_plane.cli status              # health, uptime, counters
+python3 -m control_plane.cli beacons             # what has been flagged
 python3 -m control_plane.cli beacons --min-score 0.8
-
-# View long connections (>1 hour)
-python3 -m control_plane.cli long-conns
-
-# Live monitoring mode
-python3 -m control_plane.cli watch
-
-# Output as CSV
+python3 -m control_plane.cli long-conns          # connections older than 1h
+python3 -m control_plane.cli watch               # live view
 python3 -m control_plane.cli beacons --csv > beacons.csv
 ```
 
-## CLI Commands
+## CLI reference
 
 ### `status`
 
-Show system status (live/offline), uptime, and statistics.
+Server health, uptime, and the running event counters.
 
 ```
     ____                               ____       __            __ 
@@ -107,18 +107,18 @@ Show system status (live/offline), uptime, and statistics.
 
 ### `beacons`
 
-Show detected beacon patterns with severity scoring.
+Detected beacons, sorted by score.
 
 ```bash
 python3 -m control_plane.cli beacons [options]
 ```
 
 Options:
-- `--min-score FLOAT` - Minimum beacon score (0.0-1.0)
-- `--limit INT` - Maximum results to show
-- `--csv, -o` - Output as CSV
+- `--min-score FLOAT`: minimum beacon score (0.0 to 1.0)
+- `--limit INT`: cap the number of results
+- `--csv, -o`: emit CSV instead of the table view
 
-Example output:
+Sample output:
 ```
   SCORE   SEVERITY    SOURCE IP           DEST IP             PORT   PROTO  CONNS     INTERVAL   
   -----   --------    ---------           -------             ----   -----  -----     --------   
@@ -129,45 +129,43 @@ Example output:
 
 ### `long-conns`
 
-Show long-standing connections that may indicate persistent C2.
+Long-lived connections that may indicate persistent C2.
 
 ```bash
 python3 -m control_plane.cli long-conns [options]
 ```
 
 Options:
-- `--min-duration INT` - Minimum duration in seconds (default: 3600)
-- `--limit INT` - Maximum results to show
-- `--csv, -o` - Output as CSV
+- `--min-duration INT`: minimum duration in seconds (default 3600)
+- `--limit INT`: cap the number of results
+- `--csv, -o`: emit CSV
 
 ### `connections`
 
-Show all tracked connection pairs.
+All tracked connection pairs.
 
 ```bash
 python3 -m control_plane.cli connections [options]
 ```
 
 Options:
-- `--limit INT` - Maximum results to show
-- `--csv, -o` - Output as CSV
+- `--limit INT`: cap the number of results
+- `--csv, -o`: emit CSV
 
 ### `watch`
 
-Live monitoring mode with auto-refresh.
+Live monitoring with auto-refresh.
 
 ```bash
 python3 -m control_plane.cli watch [options]
 ```
 
 Options:
-- `--interval INT` - Refresh interval in seconds (default: 5)
+- `--interval INT`: refresh interval in seconds (default 5)
 
-Press `Ctrl+C` to exit watch mode.
+`Ctrl+C` exits.
 
-## Remote Monitoring
-
-Connect to a remote control plane:
+## Talking to a remote control plane
 
 ```bash
 python3 -m control_plane.cli --host 192.168.1.100 --port 9090 status
@@ -177,7 +175,7 @@ python3 -m control_plane.cli --host 192.168.1.100 watch
 
 ## Configuration
 
-Edit `config/config.yaml`:
+Defaults live in `config/config.yaml`. The interesting knobs:
 
 ```yaml
 control_plane:
@@ -185,11 +183,11 @@ control_plane:
   listen_port: 9090
 
 detection:
-  min_connections: 10      # Minimum events before analysis
-  cv_threshold: 0.15       # CV threshold for beacon detection
-  alert_threshold: 0.7     # Score threshold for alerts
-  jitter_threshold: 5.0    # Max timing jitter (seconds)
-  analysis_interval: 60    # Analysis frequency (seconds)
+  min_connections: 10      # events required before scoring kicks in
+  cv_threshold: 0.15       # tighter than this looks beacon-like
+  alert_threshold: 0.7     # combined score that fires alerts
+  jitter_threshold: 5.0    # seconds; max acceptable deviation from median
+  analysis_interval: 60    # how often we re-score, in seconds
 
 alerting:
   syslog_enabled: true
@@ -201,46 +199,149 @@ alerting:
 whitelist:
   source_ips: []
   destination_ips: []
-  destination_ports: [53, 123]  # DNS, NTP
+  destination_ports: [53, 123]   # DNS, NTP
 ```
 
-## Detection Methodology
+The YAML file itself has more options with comments explaining the trade-offs.
 
-### Beacon Score Calculation
-
-The combined beacon score is calculated using three components:
-
-1. **CV Score** (40%): Based on Coefficient of Variation of connection intervals
-2. **Periodicity Score** (40%): FFT-based detection of regular patterns
-3. **Jitter Score** (20%): Analysis of timing consistency
-
-### Severity Levels
-
-| Score | Severity | Description |
-|-------|----------|-------------|
-| ≥90%  | CRITICAL | High confidence beacon, immediate investigation |
-| ≥80%  | HIGH     | Likely beacon activity |
-| ≥70%  | MEDIUM   | Suspicious pattern, worth investigating |
-| <70%  | LOW      | Possible false positive |
-
-## API Endpoints
+## API endpoints
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/v1/health` | GET | Health check |
-| `/api/v1/status` | GET | Server status |
-| `/api/v1/beacons` | GET | List detected beacons |
-| `/api/v1/alerts` | GET | List alerts |
-| `/api/v1/connections` | GET | List connection pairs |
-| `/api/v1/config` | GET/POST | Get/update configuration |
-| `/api/v1/telemetry` | POST | Receive telemetry data |
-| `/api/v1/analyze` | POST | Trigger manual analysis |
+| `/api/v1/health` | GET | Health check, includes alert-queue backpressure |
+| `/api/v1/status` | GET | Server status with drop counters |
+| `/api/v1/metrics` | GET | Prometheus text metrics (v0.0.4) |
+| `/api/v1/beacons` | GET | Detected beacons |
+| `/api/v1/alerts` | GET | Alerts |
+| `/api/v1/connections` | GET | Connection pairs |
+| `/api/v1/config` | GET/POST | Read or update configuration |
+| `/api/v1/telemetry` | POST | Receive telemetry from a data plane |
+| `/api/v1/analyze` | POST | Force an analysis run |
 
-## Deployment Guide
+### Prometheus metrics
 
-#### Required Software
+`GET /api/v1/metrics` returns a Prometheus text exposition (Content-Type: `text/plain; version=0.0.4`) with these counters and gauges:
 
-**Ubuntu/Debian:**
+| Metric | Type | Description |
+|--------|------|-------------|
+| `beacon_detector_events_total` | counter | Connection events received from all data-plane nodes |
+| `beacon_detector_pairs_active` | gauge | Connection pairs currently in storage |
+| `beacon_detector_analysis_duration_seconds` | gauge | Wall-clock duration of the last analysis run |
+| `beacon_detector_alerts_total` | counter | Beacon alerts generated since startup |
+| `beacon_detector_buffer_overflow_total` | counter | Events discarded by the data-plane buffer |
+| `beacon_detector_ebpf_drops_total` | counter | Events dropped by the eBPF ring buffer |
+
+```bash
+curl http://localhost:9090/api/v1/metrics
+# HELP beacon_detector_events_total Total connection events received from all data plane nodes.
+# TYPE beacon_detector_events_total counter
+beacon_detector_events_total 15432
+...
+```
+
+### Alert queue backpressure
+
+The health endpoint reports queue saturation so a sidecar or orchestrator can shed load before events get dropped silently:
+
+```json
+{
+  "status": "healthy",
+  "alert_queue_fill_percent": 43.0,
+  "alert_queue_backpressure": false,
+  "alert_queue_drops": 0
+}
+```
+
+`alert_queue_backpressure` flips to `true` once the queue passes 80% capacity. Drop counters from both the alert queue and the data plane are mirrored at `/api/v1/status`.
+
+## Docker
+
+### Control plane
+
+The control plane is pure Python and runs in a normal container.
+
+```bash
+docker compose up control-plane
+
+# Healthy when this returns 200:
+curl http://localhost:9090/api/v1/health
+```
+
+`docker-compose.yml` also defines a `data-plane-sim` service that fires synthetic 60-second beacon traffic. It is enough to exercise the pipeline end-to-end without eBPF or root. Comment it out in production.
+
+### Data plane
+
+The real data plane will not run inside a normal container. eBPF and XDP attach to a kernel network interface, which means:
+
+| Requirement | Why |
+|-------------|-----|
+| `--network=host` | XDP and TC hooks live in the host network namespace |
+| `--privileged` | `CAP_BPF` and `CAP_NET_ADMIN` are required to load XDP/TC programs |
+| Linux ≥ 5.8 | For `BPF_RINGBUF` |
+| Kernel headers | BCC compiles the C program at load time |
+
+Either run on the host directly, or use a privileged container:
+
+```bash
+sudo docker run --rm \
+  --privileged \
+  --network=host \
+  --pid=host \
+  -v /lib/modules:/lib/modules:ro \
+  -v /usr/src:/usr/src:ro \
+  -v /sys/kernel/debug:/sys/kernel/debug \
+  -v ./config:/app/config:ro \
+  beacon-detect-data-plane \
+  python3 -m data_plane.collector -c /app/config/config.yaml -i eth0
+```
+
+---
+
+## eBPF hook attachment
+
+The collector tries hooks in order of preference so it can see both directions of traffic.
+
+### Preferred: XDP ingress + TC egress
+
+```
+NIC RX  ->  xdp_connection_tracker   (direction = INGRESS = 0)
+NIC TX  ->  tc_egress_tracker        (direction = EGRESS  = 1)
+```
+
+XDP runs before the kernel network stack, which gives the lowest possible latency on ingress. Egress goes through a TC clsact qdisc.
+
+### Fallback: TC ingress + TC egress
+
+If the NIC driver does not support native XDP (common with `virtio` and `vmxnet3` and other virtual NICs), the collector falls back to TC on both sides:
+
+```
+TC ingress  ->  tc_ingress_tracker   (direction = INGRESS = 0)
+TC egress   ->  tc_egress_tracker    (direction = EGRESS  = 1)
+```
+
+### Hook summary
+
+| Hook | Direction | BPF function | When it attaches |
+|------|-----------|--------------|------------------|
+| XDP (native) | ingress | `xdp_connection_tracker` | Default, when the NIC has an XDP driver |
+| TC clsact egress | egress | `tc_egress_tracker` | Always (paired with XDP or TC ingress) |
+| TC clsact ingress | ingress | `tc_ingress_tracker` | Fallback when XDP is unavailable |
+
+The active mode is logged at startup so you do not have to guess:
+
+```
+INFO  Attached XDP ingress hook on eth0
+INFO  Attached TC egress hook on eth0 (clsact)
+INFO  eBPF attachment mode: xdp+tc_egress
+```
+
+---
+
+## Deployment
+
+### Required packages
+
+Ubuntu/Debian:
 
 ```bash
 sudo apt-get update
@@ -253,20 +354,19 @@ sudo apt-get install -y \
     libbpf-dev
 ```
 
+### Production config
 
-#### Configuration
-
-Edit `/etc/beacon-detect/config.yaml`:
+Put your config in `/etc/beacon-detect/config.yaml`:
 
 ```yaml
 data_plane:
-  interface: "eth0"  # Your network interface
+  interface: "eth0"
   export_interval: 60
   control_plane_host: "127.0.0.1"
   control_plane_port: 9090
 
 control_plane:
-  listen_address: "127.0.0.1"  # Local only
+  listen_address: "127.0.0.1"
   listen_port: 9090
 
 detection:
@@ -275,63 +375,61 @@ detection:
   alert_threshold: 0.7
 ```
 
-#### Running
+### Running
 
-**Terminal 1: Start control plane**
+Terminal 1, control plane:
 
 ```bash
 sudo ./venv/bin/python -m control_plane.server \
     --config /etc/beacon-detect/config.yaml
 ```
 
-**Terminal 2: Start data plane**
+Terminal 2, data plane:
 
 ```bash
 sudo ./venv/bin/python -m data_plane.collector \
     --config /etc/beacon-detect/config.yaml
 ```
 
-### Configuration Tuning
+### Tuning for high traffic
 
-#### Performance Tuning
-
-For high-traffic environments:
+If exports are dropping events or memory is climbing, the levers worth touching are:
 
 ```yaml
 data_plane:
-  export_interval: 120  # Less frequent exports
-  max_buffer_size: 500000  # Larger buffer
-  ring_buffer_pages: 128  # More eBPF buffer
+  export_interval: 120        # less chatter
+  max_buffer_size: 500000     # larger telemetry buffer
+  ring_buffer_pages: 128      # larger eBPF ring buffer
 
 control_plane:
-  data_retention: 3600  # Less retention
-  cleanup_interval: 120  # More frequent cleanup
+  data_retention: 3600        # keep less history
+  cleanup_interval: 120       # cull more often
 ```
 
-#### Whitelist Common Services
+### Whitelisting periodic services
 
-Reduce false positives by whitelisting known periodic services:
+The biggest source of false positives in real networks is legitimate periodic traffic. Suppress what you trust:
 
 ```yaml
 whitelist:
   destination_ips:
-    - "8.8.8.8"      # Google DNS
-    - "8.8.4.4"      # Google DNS
-    - "1.1.1.1"      # Cloudflare DNS
-  
+    - "8.8.8.8"
+    - "8.8.4.4"
+    - "1.1.1.1"
+
   ports:
-    - 53            # DNS
-    - 123           # NTP
-    - 67            # DHCP
-    - 68            # DHCP
-  
+    - 53
+    - 123
+    - 67
+    - 68
+
   pairs:
-    - "10.0.0.5:169.254.169.254:80"  # AWS metadata
+    - "10.0.0.5:169.254.169.254:80"
 ```
 
-## Testing
+DNS over UDP/53 is intentionally not in the defaults. It is a common C2 channel, so add it only if you have other DNS visibility.
 
-Run unit tests:
+## Tests
 
 ```bash
 pytest tests/
@@ -339,4 +437,4 @@ pytest tests/
 
 ## License
 
-MIT License
+MIT.

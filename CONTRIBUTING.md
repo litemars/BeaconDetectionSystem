@@ -1,46 +1,50 @@
-# Contributing to eBPF Beacon Detection System
+# Contributing
 
-Thank you for your interest in contributing! This document provides guidelines and instructions for contributing to this project.
+PRs are welcome. Here is the path of least resistance.
 
-## Getting Started
+## Setup
 
-1. **Fork the repository** on GitHub
-2. **Clone your fork** locally:
-   ```bash
-   git clone https://github.com/litemars/BeaconDetectionSystem.git
-   cd BeaconDetectionSystem
-   ```
+Fork on GitHub, then clone your fork:
 
-3. **Set up the development environment**:
-   ```bash
-   python -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
-   pip install -r requirements.txt
-   pip install -r requirements-dev.txt
-   ```
+```bash
+git clone https://github.com/litemars/BeaconDetectionSystem.git
+cd BeaconDetectionSystem
+```
 
-## Development Workflow
+Set up a virtualenv:
 
-1. **Create a feature branch**:
-   ```bash
-   git checkout -b feature/your-feature-name
-   ```
+```bash
+python -m venv venv
+source venv/bin/activate   # Windows: venv\Scripts\activate
+pip install -r requirements.txt
+pip install -r requirements-dev.txt
+```
 
-2. **Make your changes** and commit them with clear messages:
-   ```bash
-   git commit -m "Add: brief description of changes"
-   ```
+## Workflow
 
-3. **Run tests and linting**:
-   ```bash
-   pytest
-   black --check control_plane data_plane
-   ```
+Branch off `main`:
 
-4. **Push to your fork**:
-   ```bash
-   git push origin feature/your-feature-name
-   ```
+```bash
+git checkout -b feature/your-feature-name
+```
 
-5. **Create a Pull Request** with a clear description of your changes
+Use a clear short subject in the commit (`Add: ...`, `Fix: ...`, `Refactor: ...`):
 
+```bash
+git commit -m "Add: brief description of changes"
+```
+
+Run the tests and the formatter before pushing:
+
+```bash
+pytest
+black --check control_plane data_plane
+```
+
+Push:
+
+```bash
+git push origin feature/your-feature-name
+```
+
+Open a PR with a description of what changed and why. If you are touching detection logic, mention how you tested it (replay against `eval/`, hand-crafted fixture, etc.) so a reviewer can reproduce the result.
