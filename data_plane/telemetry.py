@@ -115,7 +115,7 @@ class ConnectionEvent:
 
         # The IP is in network byte order from the kernel
         # struct.pack('!I', ...) expects host order, so we use ntohl to convert
-        return socket.inet_ntoa(struct.pack("I", socket.ntohl(ip_int)))
+        return socket.inet_ntoa(struct.pack("!I", socket.ntohl(ip_int)))
 
     @property
     def protocol_name(self):
