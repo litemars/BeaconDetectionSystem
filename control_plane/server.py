@@ -173,6 +173,8 @@ class ControlPlaneServer:
 
         det_config = config.get("detection", {})
         whitelist = config.get("whitelist", {})
+        baseline_config = config.get("benign_baseline", {})
+        patterns = baseline_config.get("patterns", [])
         analyzer_config = AnalyzerConfig(
             analysis_interval=det_config.get("analysis_interval", 60),
             min_connections=det_config.get("min_connections", 10),
