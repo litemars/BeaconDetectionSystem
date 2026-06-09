@@ -92,6 +92,12 @@ class DataPlaneCollector:
         # Statistics
         self._stats = DataPlaneStats()
 
+        # Last cumulative drop counters successfully reported to the control
+        # plane. The control plane sums what it receives, so we send per-batch
+        # deltas rather than the running totals.
+        self._last_sent_ebpf_drops = 0
+        self._last_sent_overflow = 0
+
         # Control flags
         self._running = False
         self._shutdown_event = threading.Event()
@@ -374,11 +380,22 @@ class DataPlaneCollector:
             logger.debug("No events to export")
             return
 
+        # Per-batch deltas of the cumulative drop counters (eBPF ring buffer and
+        # user-space telemetry buffer overflow) for the control plane to sum.
+        ebpf_drops = self._stats.events_dropped
+        overflow = self._buffer.overflow_count
+        data_plane_stats = {
+            "events_dropped_ebpf": max(0, ebpf_drops - self._last_sent_ebpf_drops),
+            "events_dropped_overflow": max(0, overflow - self._last_sent_overflow),
+        }
+
         logger.info(f"Exporting {len(events)} events to control plane")
 
         try:
-            success = self._exporter.export_events(events)
+            success = self._exporter.export_events(events, data_plane_stats)
             if success:
+                self._last_sent_ebpf_drops = ebpf_drops
+                self._last_sent_overflow = overflow
                 self._stats.batches_sent += 1
                 logger.info(f"Successfully exported {len(events)} events")
             else:

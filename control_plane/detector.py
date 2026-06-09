@@ -165,6 +165,7 @@ class DetectionResult:
             cv_score=data["cv_score"],
             periodicity_score=data["periodicity_score"],
             jitter_score=data["jitter_score"],
+            size_score=data.get("size_score", 0.0),
             combined_score=data["combined_score"],
             is_beacon=data["is_beacon"],
             confidence=BeaconConfidence(data["confidence"]),

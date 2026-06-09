@@ -152,6 +152,9 @@ class TestConnectionEvent:
         evt = ConnectionEvent.from_ctype(ctype_evt, node_id="n1")
         assert evt.timestamp_ns == 999_000_000_000
         assert evt.node_id == "n1"
+        # IP octets must not be reversed by the byte-order conversion.
+        assert evt.src_ip == "192.168.1.10"
+        assert evt.dst_ip == "10.0.0.1"
 
     def test_from_ctype_with_ktime_offset(self):
         """from_ctype with ktime_offset_ns shifts the timestamp to wall time."""
@@ -170,6 +173,9 @@ class TestConnectionEvent:
         evt = ConnectionEvent.from_ctype(ctype_evt, ktime_offset_ns=offset)
         assert evt.timestamp_ns == 1_000_000_000 + offset
         assert "T" in evt.timestamp_utc  # Should have been converted to ISO string
+        # Asymmetric IPs catch octet reversal (1.2.3.4 would become 4.3.2.1).
+        assert evt.src_ip == "1.2.3.4"
+        assert evt.dst_ip == "5.6.7.8"
 
     def test_repr_contains_connection_key(self):
         evt = self._make_event()

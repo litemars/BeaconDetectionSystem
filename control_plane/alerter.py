@@ -496,11 +496,13 @@ class AlertManager:
         return alert
 
     def get_recent_alerts(self, limit: int = 50, severity=None):
-        alerts = self._recent_alerts[-limit:]
-
+        # Filter first, then take the most recent `limit`, so a severity filter
+        # cannot be starved by unrelated alerts occupying the limit window.
+        alerts = self._recent_alerts
         if severity:
             alerts = [a for a in alerts if a.severity == severity]
 
+        alerts = alerts[-limit:]
         return [a.to_dict() for a in reversed(alerts)]
 
     def load_historical_alerts(self):

@@ -31,6 +31,15 @@ class BenignPattern:
             return False
         return True
 
+    @classmethod
+    def from_dict(cls, data: dict) -> "BenignPattern":
+        """Build a BenignPattern from a config dict (e.g. parsed YAML)."""
+        return cls(
+            dst_port=int(data["dst_port"]),
+            protocol=data.get("protocol"),
+            label=data.get("label", "benign"),
+        )
+
 
 # Default benign baseline applied when benign_baseline.enabled is true
 # and no custom patterns are configured.
@@ -51,6 +60,23 @@ class AnalyzerConfig:
     # Benign traffic suppression
     benign_baseline_enabled: bool = True
     benign_patterns: List[BenignPattern] = field(default_factory=list)
+
+    def __post_init__(self):
+        # Patterns may arrive as raw dicts (e.g. parsed straight from YAML by
+        # the control-plane server). Normalize them into BenignPattern objects
+        # so callers can always rely on .matches(); drop anything unusable.
+        normalized: List[BenignPattern] = []
+        for p in self.benign_patterns:
+            if isinstance(p, BenignPattern):
+                normalized.append(p)
+            elif isinstance(p, dict):
+                try:
+                    normalized.append(BenignPattern.from_dict(p))
+                except (KeyError, ValueError, TypeError) as e:
+                    logger.warning(f"Ignoring invalid benign pattern {p!r}: {e}")
+            else:
+                logger.warning(f"Ignoring invalid benign pattern: {p!r}")
+        self.benign_patterns = normalized
 
     def get_effective_benign_patterns(self) -> List[BenignPattern]:
         """Return user-configured patterns, falling back to defaults."""
@@ -128,6 +154,7 @@ class ConnectionAnalyzer:
         self._total_beacons_detected = 0
         self._total_alerts_generated = 0
         self._total_suppressed = 0
+        self._total_skipped = 0
 
         self._run_counter = 0
 
@@ -233,9 +260,15 @@ class ConnectionAnalyzer:
                 pairs.sort(key=lambda p: p.connection_count, reverse=True)
                 pairs = pairs[: self.config.max_pairs_per_run]
 
-            # Stage 1: candidate filter — suppress known-benign patterns
+            # Stage 1: candidate filter — drop whitelisted pairs, then suppress
+            # known-benign patterns.
             candidates = []
             for pair in pairs:
+                if self._is_whitelisted(pair):
+                    run.pairs_skipped += 1
+                    logger.debug(f"Skipped {pair.pair_key}: matched whitelist")
+                    continue
+
                 reason = self._get_suppression_reason(pair)
                 if reason:
                     run.pairs_suppressed += 1
@@ -248,7 +281,8 @@ class ConnectionAnalyzer:
             run.pairs_analyzed = len(candidates)
             logger.info(
                 f"Analyzing {len(candidates)} pairs "
-                f"({run.pairs_suppressed} suppressed by benign baseline)"
+                f"({run.pairs_skipped} whitelisted, "
+                f"{run.pairs_suppressed} suppressed by benign baseline)"
             )
 
             # Stage 2: full scoring
@@ -312,6 +346,7 @@ class ConnectionAnalyzer:
         self._total_beacons_detected += run.beacons_detected
         self._total_alerts_generated += run.alerts_generated
         self._total_suppressed += run.pairs_suppressed
+        self._total_skipped += run.pairs_skipped
 
         self._run_history.append(run)
         if len(self._run_history) > self._max_run_history:
@@ -436,6 +471,9 @@ class ConnectionAnalyzer:
             "total_beacons_detected": self._total_beacons_detected,
             "total_alerts_generated": self._total_alerts_generated,
             "total_suppressed": self._total_suppressed,
+            "total_skipped": self._total_skipped,
+            "benign_baseline_enabled": self.config.benign_baseline_enabled,
+            "benign_pattern_count": len(self.config.get_effective_benign_patterns()),
             "current_known_beacons": len(self._known_beacons),
             "active_cooldowns": len(self._alert_cooldowns),
             "whitelist_rules": {

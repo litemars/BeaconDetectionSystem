@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import socket
 import time
@@ -122,7 +123,7 @@ class TelemetryExporter:
             logger.warning(f"Control plane health check error: {e}")
             return False
 
-    async def export_events(self, events: list):
+    async def export_events(self, events: list, data_plane_stats: dict = None):
         if not events:
             logger.debug("No events to export")
             return True
@@ -132,7 +133,7 @@ class TelemetryExporter:
             batch_id=str(uuid.uuid4()), node_id=self.node_id, events=events
         )
 
-        return await self.export_batch(batch)
+        return await self.export_batch(batch, data_plane_stats=data_plane_stats)
 
     @retry(
         stop=stop_after_attempt(3),
@@ -140,15 +141,18 @@ class TelemetryExporter:
         retry=retry_if_exception_type(ExportError),
         reraise=True,
     )
-    async def export_batch(self, batch):
+    async def export_batch(self, batch, data_plane_stats: dict = None):
 
         if not self._session:
             raise ExportError("Exporter not started")
 
-        # Serialize batch
+        # Serialize batch, optionally attaching data-plane drop counters so the
+        # control plane can surface them via /api/v1/metrics.
         try:
-            payload = batch.to_json()
-            payload_bytes = payload.encode("utf-8")
+            payload_obj = batch.to_dict()
+            if data_plane_stats:
+                payload_obj["data_plane_stats"] = data_plane_stats
+            payload_bytes = json.dumps(payload_obj).encode("utf-8")
         except Exception as e:
             logger.error(f"Failed to serialize batch: {e}")
             self._batches_failed += 1
@@ -290,14 +294,14 @@ class SyncTelemetryExporter:
 
         logger.info("SyncTelemetryExporter stopped")
 
-    def export_events(self, events: list):
+    def export_events(self, events: list, data_plane_stats: dict = None):
 
         if not self._loop or not self._async_exporter:
             logger.error("Exporter not started")
             return False
 
         future = asyncio.run_coroutine_threadsafe(
-            self._async_exporter.export_events(events), self._loop
+            self._async_exporter.export_events(events, data_plane_stats), self._loop
         )
 
         try:

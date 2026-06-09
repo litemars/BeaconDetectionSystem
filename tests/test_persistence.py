@@ -51,6 +51,7 @@ def _make_detection_result():
         cv_score=0.9,
         periodicity_score=0.85,
         jitter_score=0.8,
+        size_score=0.75,
         combined_score=0.87,
         is_beacon=True,
         confidence=BeaconConfidence.HIGH,

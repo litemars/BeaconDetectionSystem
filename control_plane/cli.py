@@ -237,11 +237,11 @@ class BeaconCLI:
             ("Events Received", f"{status.get('events_received', 0):,}"),
             (
                 "Connection Pairs",
-                f"{status.get('storage', {}).get('pairs_count', 0):,}",
+                f"{status.get('storage', {}).get('pair_count', 0):,}",
             ),
             (
                 "Beacons Detected",
-                f"{status.get('analyzer', {}).get('beacons_detected', 0):,}",
+                f"{status.get('analyzer', {}).get('current_known_beacons', 0):,}",
             ),
             (
                 "Alerts Generated",
@@ -249,7 +249,7 @@ class BeaconCLI:
             ),
             (
                 "Analysis Runs",
-                f"{status.get('analyzer', {}).get('analysis_runs', 0):,}",
+                f"{status.get('analyzer', {}).get('total_runs', 0):,}",
             ),
         ]
 
@@ -547,9 +547,9 @@ class BeaconCLI:
                     # Status line
                     uptime = status.get("uptime_seconds", 0)
                     events = status.get("events_received", 0)
-                    pairs = status.get("storage", {}).get("pairs_count", 0)
+                    pairs = status.get("storage", {}).get("pair_count", 0)
                     beacons_count = status.get("analyzer", {}).get(
-                        "beacons_detected", 0
+                        "current_known_beacons", 0
                     )
 
                     print(
